@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">AHD_Camera</string>
+    <string name="camera_loading">正在打开摄像头…</string>
+    <string name="camera_permission_required">需要相机权限才能显示画面</string>
+    <string name="camera_not_found">未检测到可用摄像头</string>
+    <string name="camera_open_failed">摄像头打开失败</string>
+</resources>
