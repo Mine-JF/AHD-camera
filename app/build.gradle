@@ -4,6 +4,16 @@ plugins {
 
 android {
     namespace 'com.example.ahd_camera'
+    signingConfigs {
+
+        rk356x_keystore {
+            keyAlias 'platform'
+            keyPassword 'android'
+            storeFile file('./rk356x-platform.keystore')
+            storePassword 'android'
+        }
+
+    }
     compileSdk 35
 
     defaultConfig {
@@ -18,8 +28,18 @@ android {
 
     buildTypes {
         release {
+            debuggable false
+            zipAlignEnabled false
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.rk356x_keystore
+        }
+        debug {
+            debuggable true
+            zipAlignEnabled false
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            signingConfig signingConfigs.rk356x_keystore
         }
     }
     compileOptions {

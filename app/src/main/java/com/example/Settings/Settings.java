@@ -117,7 +117,7 @@ public class Settings extends AppCompatActivity {
             case 4:
                 return new DisplaySettingsController();
             case 5:
-                return new SoundSettingsController();
+                return new SoundSettingsController(this);
             case 6:
                 return new SystemInfoSettingsController(this);
             default:
