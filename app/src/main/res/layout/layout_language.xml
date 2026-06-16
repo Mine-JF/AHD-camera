@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_settings_card"
+        android:orientation="vertical"
+        android:paddingStart="38dp"
+        android:paddingTop="36dp"
+        android:paddingEnd="38dp"
+        android:paddingBottom="36dp">
+
+        <GridLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:alignmentMode="alignMargins"
+            android:columnCount="2"
+            android:useDefaultMargins="true">
+
+            <Button
+                android:id="@+id/btn_lang_zh_cn"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_zh" />
+
+            <Button
+                android:id="@+id/btn_lang_en"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_en" />
+
+            <Button
+                android:id="@+id/btn_lang_ru"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_ru" />
+
+            <Button
+                android:id="@+id/btn_lang_ja"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_ja" />
+
+            <Button
+                android:id="@+id/btn_lang_de"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_de" />
+
+            <Button
+                android:id="@+id/btn_lang_fr"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_fr" />
+
+            <Button
+                android:id="@+id/btn_lang_ko"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_ko" />
+
+            <Button
+                android:id="@+id/btn_lang_es"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_es" />
+
+            <Button
+                android:id="@+id/btn_lang_it"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_it" />
+
+            <Button
+                android:id="@+id/btn_lang_pt"
+                style="@style/SettingsOptionButton.Large"
+                android:text="@string/settings_language_pt" />
+        </GridLayout>
+    </LinearLayout>
+</LinearLayout>

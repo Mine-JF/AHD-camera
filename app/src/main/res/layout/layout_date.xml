@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_settings_card"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:padding="22dp">
+
+        <Button
+            android:id="@+id/btn_count_metric"
+            style="@style/SettingsOptionButton"
+            android:layout_marginEnd="24dp"
+            android:text="@string/settings_count_metric" />
+
+        <Button
+            android:id="@+id/btn_count_imperial"
+            style="@style/SettingsOptionButton"
+            android:text="@string/settings_count_imperial" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:background="@drawable/bg_settings_card"
+        android:gravity="center"
+        android:orientation="horizontal"
+        android:padding="22dp">
+
+        <Button
+            android:id="@+id/btn_count_minus"
+            style="@style/SettingsOptionButton"
+            android:text="-" />
+
+        <TextView
+            android:id="@+id/tv_count_value"
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:text="1.00"
+            android:textColor="@color/settings_text_primary"
+            android:textSize="28sp"
+            android:textStyle="bold" />
+
+        <Button
+            android:id="@+id/btn_count_plus"
+            style="@style/SettingsOptionButton"
+            android:text="+" />
+    </LinearLayout>
+</LinearLayout>

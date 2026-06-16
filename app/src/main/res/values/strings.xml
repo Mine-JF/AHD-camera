@@ -4,4 +4,23 @@
     <string name="camera_permission_required">需要相机权限才能显示画面</string>
     <string name="camera_not_found">未检测到可用摄像头</string>
     <string name="camera_open_failed">摄像头打开失败</string>
+    <string name="settings_title">设置</string>
+    <string name="settings_language_zh">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_language_ru">Русский</string>
+    <string name="settings_language_ja">日本語</string>
+    <string name="settings_language_de">Deutsch</string>
+    <string name="settings_language_fr">Francais</string>
+    <string name="settings_language_ko">한국어</string>
+    <string name="settings_language_es">Español</string>
+    <string name="settings_language_it">Italiano</string>
+    <string name="settings_language_pt">Português</string>
+    <string name="settings_format">格式化</string>
+    <string name="settings_brightness">背光亮度</string>
+    <string name="settings_volume">音量</string>
+    <string name="settings_factory_reset_action">恢复出厂设置</string>
+    <string name="settings_count_metric">米</string>
+    <string name="settings_count_imperial">英尺</string>
+    <string name="settings_sdk_version">SDK 版本                                   251120 V1.4</string>
+    <string name="settings_screen_info">屏幕信息                              1024x600 60fps</string>
 </resources>

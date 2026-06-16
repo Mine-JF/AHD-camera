@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_settings_card"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="22dp">
+
+        <TextView
+            android:layout_width="140dp"
+            android:layout_height="wrap_content"
+            android:text="@string/settings_brightness"
+            android:textColor="@color/settings_text_primary"
+            android:textSize="18sp" />
+
+        <SeekBar
+            android:id="@+id/seek_display"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:max="10"
+            android:progress="8"
+            android:progressTint="@color/settings_slider_fill"
+            android:thumbTint="@color/settings_slider_fill" />
+
+        <TextView
+            android:id="@+id/tv_display_value"
+            android:layout_width="40dp"
+            android:layout_height="wrap_content"
+            android:gravity="end"
+            android:text="8"
+            android:textColor="@color/settings_text_primary"
+            android:textSize="20sp" />
+    </LinearLayout>
+</LinearLayout>
