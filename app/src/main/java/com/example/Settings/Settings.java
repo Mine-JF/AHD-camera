@@ -3,10 +3,7 @@ package com.example.Settings;
 import android.os.Bundle;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.widget.Button;
 import android.widget.FrameLayout;
-import android.widget.SeekBar;
-import android.widget.TextView;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
@@ -20,19 +17,13 @@ import com.example.ahd_camera.R;
 import com.example.ahd_camera.Utils;
 
 import java.util.Arrays;
-import java.util.Calendar;
 import java.util.List;
-import java.util.Locale;
 
 public class Settings extends AppCompatActivity {
 
     private RecyclerView rvLeftMenu;
     private FrameLayout rightContentContainer;
-    private final Calendar settingsCalendar = Calendar.getInstance();
-    private boolean useMetric = true;
-    private float meterStep = 1.00f;
-    private int brightnessLevel = 8;
-    private int volumeLevel = 8;
+    private SettingsContentController currentController;
 
     private final List<String> menuList = Arrays.asList(
             "语言",
@@ -50,6 +41,8 @@ public class Settings extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_settings);
+
+        // 让内容区域避开系统栏，同时保持当前页面的全屏风格。
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
             Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
@@ -73,191 +66,62 @@ public class Settings extends AppCompatActivity {
     }
 
     private void showRightContent(int position) {
+        if (currentController != null) {
+            currentController.onHide();
+        }
+
         rightContentContainer.removeAllViews();
 
-        int layoutId;
-        switch (position) {
-            case 0:
-                layoutId = R.layout.layout_language;
-                break;
-            case 1:
-                layoutId = R.layout.layout_time;
-                break;
-            case 2:
-                layoutId = R.layout.layout_date;
-                break;
-            case 3:
-                layoutId = R.layout.layout_sdcard;
-                break;
-            case 4:
-                layoutId = R.layout.layout_display;
-                break;
-            case 5:
-                layoutId = R.layout.layout_sound;
-                break;
-            case 6:
-                layoutId = R.layout.layout_system_info;
-                break;
-            case 7:
-                layoutId = R.layout.layout_factory_reset;
-                break;
-            default:
-                layoutId = R.layout.layout_language;
-                break;
-        }
-
+        int layoutId = getLayoutId(position);
         View view = LayoutInflater.from(this).inflate(layoutId, rightContentContainer, false);
         rightContentContainer.addView(view);
-        bindRightContent(position, view);
+
+        currentController = createController(position);
+        currentController.bind(view);
+        currentController.onShow();
     }
 
-    private void bindRightContent(int position, View view) {
+    private int getLayoutId(int position) {
         switch (position) {
             case 0:
-                bindLanguageContent(view);
-                break;
+                return R.layout.layout_language;
             case 1:
-                bindTimeContent(view);
-                break;
+                return R.layout.layout_time;
             case 2:
-                bindCountContent(view);
-                break;
+                return R.layout.layout_date;
+            case 3:
+                return R.layout.layout_sdcard;
             case 4:
-                bindDisplayContent(view);
-                break;
+                return R.layout.layout_display;
             case 5:
-                bindSoundContent(view);
-                break;
+                return R.layout.layout_sound;
+            case 6:
+                return R.layout.layout_system_info;
+            case 7:
+                return R.layout.layout_factory_reset;
             default:
-                break;
+                return R.layout.layout_language;
         }
     }
 
-    private void bindLanguageContent(View view) {
-        int[] buttonIds = {
-                R.id.btn_lang_zh_cn,
-                R.id.btn_lang_en,
-                R.id.btn_lang_ru,
-                R.id.btn_lang_ja,
-                R.id.btn_lang_de,
-                R.id.btn_lang_fr,
-                R.id.btn_lang_ko,
-                R.id.btn_lang_es,
-                R.id.btn_lang_it,
-                R.id.btn_lang_pt
-        };
-
-        View.OnClickListener listener = clickedView -> {
-            for (int id : buttonIds) {
-                Button button = view.findViewById(id);
-                button.setSelected(button == clickedView);
-            }
-        };
-
-        for (int id : buttonIds) {
-            view.findViewById(id).setOnClickListener(listener);
-        }
-
-        Button defaultButton = view.findViewById(R.id.btn_lang_zh_cn);
-        defaultButton.setSelected(true);
-    }
-
-    private void bindTimeContent(View view) {
-        view.findViewById(R.id.btn_year_plus).setOnClickListener(v -> updateCalendar(view, Calendar.YEAR, 1));
-        view.findViewById(R.id.btn_year_minus).setOnClickListener(v -> updateCalendar(view, Calendar.YEAR, -1));
-        view.findViewById(R.id.btn_month_plus).setOnClickListener(v -> updateCalendar(view, Calendar.MONTH, 1));
-        view.findViewById(R.id.btn_month_minus).setOnClickListener(v -> updateCalendar(view, Calendar.MONTH, -1));
-        view.findViewById(R.id.btn_day_plus).setOnClickListener(v -> updateCalendar(view, Calendar.DAY_OF_MONTH, 1));
-        view.findViewById(R.id.btn_day_minus).setOnClickListener(v -> updateCalendar(view, Calendar.DAY_OF_MONTH, -1));
-        view.findViewById(R.id.btn_hour_plus).setOnClickListener(v -> updateCalendar(view, Calendar.HOUR_OF_DAY, 1));
-        view.findViewById(R.id.btn_hour_minus).setOnClickListener(v -> updateCalendar(view, Calendar.HOUR_OF_DAY, -1));
-        view.findViewById(R.id.btn_minute_plus).setOnClickListener(v -> updateCalendar(view, Calendar.MINUTE, 1));
-        view.findViewById(R.id.btn_minute_minus).setOnClickListener(v -> updateCalendar(view, Calendar.MINUTE, -1));
-        view.findViewById(R.id.btn_second_plus).setOnClickListener(v -> updateCalendar(view, Calendar.SECOND, 1));
-        view.findViewById(R.id.btn_second_minus).setOnClickListener(v -> updateCalendar(view, Calendar.SECOND, -1));
-        refreshTimeValues(view);
-    }
-
-    private void updateCalendar(View view, int field, int delta) {
-        settingsCalendar.add(field, delta);
-        refreshTimeValues(view);
-    }
-
-    private void refreshTimeValues(View view) {
-        ((TextView) view.findViewById(R.id.tv_year_value)).setText(String.valueOf(settingsCalendar.get(Calendar.YEAR)));
-        ((TextView) view.findViewById(R.id.tv_month_value)).setText(formatTwoDigits(settingsCalendar.get(Calendar.MONTH) + 1));
-        ((TextView) view.findViewById(R.id.tv_day_value)).setText(formatTwoDigits(settingsCalendar.get(Calendar.DAY_OF_MONTH)));
-        ((TextView) view.findViewById(R.id.tv_hour_value)).setText(formatTwoDigits(settingsCalendar.get(Calendar.HOUR_OF_DAY)));
-        ((TextView) view.findViewById(R.id.tv_minute_value)).setText(formatTwoDigits(settingsCalendar.get(Calendar.MINUTE)));
-        ((TextView) view.findViewById(R.id.tv_second_value)).setText(formatTwoDigits(settingsCalendar.get(Calendar.SECOND)));
-    }
-
-    private void bindCountContent(View view) {
-        Button metricButton = view.findViewById(R.id.btn_count_metric);
-        Button imperialButton = view.findViewById(R.id.btn_count_imperial);
-        TextView valueView = view.findViewById(R.id.tv_count_value);
-
-        View.OnClickListener unitListener = clickedView -> {
-            useMetric = clickedView.getId() == R.id.btn_count_metric;
-            metricButton.setSelected(useMetric);
-            imperialButton.setSelected(!useMetric);
-        };
-        metricButton.setOnClickListener(unitListener);
-        imperialButton.setOnClickListener(unitListener);
-
-        view.findViewById(R.id.btn_count_minus).setOnClickListener(v -> {
-            meterStep = Math.max(0.25f, meterStep - 0.25f);
-            valueView.setText(String.format(Locale.US, "%.2f", meterStep));
-        });
-        view.findViewById(R.id.btn_count_plus).setOnClickListener(v -> {
-            meterStep = Math.min(9.99f, meterStep + 0.25f);
-            valueView.setText(String.format(Locale.US, "%.2f", meterStep));
-        });
-
-        metricButton.setSelected(useMetric);
-        imperialButton.setSelected(!useMetric);
-        valueView.setText(String.format(Locale.US, "%.2f", meterStep));
-    }
-
-    private void bindDisplayContent(View view) {
-        TextView valueView = view.findViewById(R.id.tv_display_value);
-        SeekBar seekBar = view.findViewById(R.id.seek_display);
-        seekBar.setProgress(brightnessLevel);
-        valueView.setText(String.valueOf(brightnessLevel));
-        seekBar.setOnSeekBarChangeListener(new SimpleSeekListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                brightnessLevel = progress;
-                valueView.setText(String.valueOf(progress));
-            }
-        });
-    }
-
-    private void bindSoundContent(View view) {
-        TextView valueView = view.findViewById(R.id.tv_sound_value);
-        SeekBar seekBar = view.findViewById(R.id.seek_sound);
-        seekBar.setProgress(volumeLevel);
-        valueView.setText(String.valueOf(volumeLevel));
-        seekBar.setOnSeekBarChangeListener(new SimpleSeekListener() {
-            @Override
-            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
-                volumeLevel = progress;
-                valueView.setText(String.valueOf(progress));
-            }
-        });
-    }
-
-    private String formatTwoDigits(int value) {
-        return String.format(Locale.US, "%02d", value);
-    }
-
-    private abstract static class SimpleSeekListener implements SeekBar.OnSeekBarChangeListener {
-        @Override
-        public void onStartTrackingTouch(SeekBar seekBar) {
-        }
-
-        @Override
-        public void onStopTrackingTouch(SeekBar seekBar) {
+    private SettingsContentController createController(int position) {
+        switch (position) {
+            case 0:
+                return new LanguageSettingsController();
+            case 1:
+                return new TimeSettingsController();
+            case 2:
+                return new CountSettingsController();
+            case 3:
+                return new StorageSettingsController(this);
+            case 4:
+                return new DisplaySettingsController();
+            case 5:
+                return new SoundSettingsController();
+            case 6:
+                return new SystemInfoSettingsController(this);
+            default:
+                return new NoOpSettingsController();
         }
     }
 
@@ -265,6 +129,17 @@ public class Settings extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         Utils.hideSystemUI(getWindow());
+        if (currentController != null) {
+            currentController.onShow();
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (currentController != null) {
+            currentController.onHide();
+        }
+        super.onPause();
     }
 
     @Override

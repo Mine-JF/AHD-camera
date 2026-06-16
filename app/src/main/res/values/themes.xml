@@ -33,9 +33,9 @@
     </style>
 
     <style name="SettingsOptionButton.Large" parent="SettingsOptionButton">
-        <item name="android:layout_width">230dp</item>
-        <item name="android:layout_height">66dp</item>
-        <item name="android:textSize">24sp</item>
+        <item name="android:layout_width">260dp</item>
+        <item name="android:layout_height">76dp</item>
+        <item name="android:textSize">26sp</item>
     </style>
 
 </resources>

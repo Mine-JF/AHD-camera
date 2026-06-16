@@ -21,6 +21,22 @@
     <string name="settings_factory_reset_action">恢复出厂设置</string>
     <string name="settings_count_metric">米</string>
     <string name="settings_count_imperial">英尺</string>
-    <string name="settings_sdk_version">SDK 版本                                   251120 V1.4</string>
-    <string name="settings_screen_info">屏幕信息                              1024x600 60fps</string>
+    <string name="settings_sdk_version">SDK 版本</string>
+    <string name="settings_apk_version_format">SDK 版本                                   %1$s (%2$d)</string>
+    <string name="settings_apk_version_unavailable">SDK 版本                                   未知</string>
+    <string name="settings_screen_info">屏幕信息</string>
+    <string name="settings_screen_info_format">屏幕信息                              %1$dx%2$d</string>
+    <string name="settings_screen_info_unavailable">屏幕信息                              未知</string>
+    <string name="settings_storage_none">未检测到外部存储卡或 U 盘</string>
+    <string name="settings_storage_manager_unavailable">当前系统无法读取存储卷信息</string>
+    <string name="settings_storage_unknown">未知存储卷</string>
+    <string name="settings_storage_state_prefix">状态：</string>
+    <string name="settings_storage_path_prefix">路径：</string>
+    <string name="settings_storage_capacity_prefix">容量：</string>
+    <string name="settings_storage_capacity_unknown">容量：未知</string>
+    <string name="settings_format_confirm_title">确认格式化</string>
+    <string name="settings_format_confirm_message">确定要格式化当前外部存储吗？此操作会清除其中的数据。</string>
+    <string name="settings_yes">是</string>
+    <string name="settings_no">否</string>
+    <string name="settings_format_not_implemented">已确认格式化，但当前版本未接入实际格式化接口</string>
 </resources>

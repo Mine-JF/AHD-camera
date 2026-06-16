@@ -11,6 +11,7 @@
         android:orientation="vertical">
 
         <TextView
+            android:id="@+id/tv_sdk_info"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:padding="18dp"
@@ -24,7 +25,7 @@
             android:background="@color/settings_border" />
 
         <TextView
-            android:id="@+id/Screen_Info"
+            android:id="@+id/tv_screen_info"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:padding="18dp"
