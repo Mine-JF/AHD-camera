@@ -1,5 +1,6 @@
 package com.example.Settings;
 
+import android.util.Log;
 import android.view.View;
 
 import androidx.appcompat.app.AppCompatActivity;
@@ -13,6 +14,7 @@ import java.util.Locale;
 // 语言页：负责按钮互斥选中状态。
 public class LanguageSettingsController implements SettingsContentController {
 
+    private static final String TAG = "LanguageSettings";
     private final AppCompatActivity activity;
 
     public LanguageSettingsController(AppCompatActivity activity) {
@@ -21,6 +23,7 @@ public class LanguageSettingsController implements SettingsContentController {
 
     @Override
     public void bind(View view) {
+        Log.d(TAG, "bind: start");
         int[] buttonIds = {
                 R.id.btn_lang_zh_cn,
                 R.id.btn_lang_en,
@@ -39,21 +42,30 @@ public class LanguageSettingsController implements SettingsContentController {
         // 点击任意语言时，只在目标语言发生变化时切换应用 locale。
         View.OnClickListener listener = clickedView -> {
             String languageTag = getLanguageTag(clickedView.getId());
+            Log.d(TAG, "click: targetLanguage=" + languageTag);
             if (isCurrentLanguage(view, languageTag)) {
+                Log.w(TAG, "click: language already active=" + languageTag);
                 return;
             }
 
-            AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(languageTag));
-            activity.overridePendingTransition(0, 0);
+            try {
+                AppCompatDelegate.setApplicationLocales(LocaleListCompat.forLanguageTags(languageTag));
+                activity.overridePendingTransition(0, 0);
+                Log.d(TAG, "click: language switched to=" + languageTag);
+            } catch (RuntimeException e) {
+                Log.e(TAG, "click: switch language failed", e);
+            }
         };
 
         for (int id : buttonIds) {
             view.findViewById(id).setOnClickListener(listener);
         }
+        Log.d(TAG, "bind: end");
     }
 
     private void syncSelection(View view, int[] buttonIds) {
         String currentLanguage = getCurrentLanguageTag(view);
+        Log.d(TAG, "syncSelection: currentLanguage=" + currentLanguage);
 
         for (int id : buttonIds) {
             view.findViewById(id).setSelected(currentLanguage.equals(getLanguageTag(id).substring(0, 2)));
@@ -73,6 +85,7 @@ public class LanguageSettingsController implements SettingsContentController {
             }
         }
 
+        Log.w(TAG, "getCurrentLanguageTag: fallback to system locale");
         Locale currentLocale = view.getResources().getConfiguration().getLocales().get(0);
         return currentLocale.getLanguage();
     }
@@ -105,6 +118,7 @@ public class LanguageSettingsController implements SettingsContentController {
         if (viewId == R.id.btn_lang_pt) {
             return "pt";
         }
+        Log.w(TAG, "getLanguageTag: unknown viewId=" + viewId + ", fallback=zh-CN");
         return "zh-CN";
     }
 }

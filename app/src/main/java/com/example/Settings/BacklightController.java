@@ -24,6 +24,7 @@ public final class BacklightController {
 
     // 把 0-10 映射到 10-255，最低保底 10，避免全黑。
     public static int mapLevelToPwm(int level) {
+        // 先把输入值限制到合法范围，再映射到硬件可写的 PWM 区间。
         int clampedLevel = Math.max(0, Math.min(10, level));
         return 10 + Math.round((clampedLevel * 245f) / 10f);
     }
@@ -42,7 +43,7 @@ public final class BacklightController {
                 return;
             }
         }
-        Log.w(TAG, "write brightness failed, no writable backlight path");
+        Log.e(TAG, "write brightness failed, no writable backlight path");
     }
 
     private static boolean writeToFile(String path, String value) {
@@ -56,7 +57,7 @@ public final class BacklightController {
             outputStream.flush();
             return true;
         } catch (Exception ignored) {
-            Log.w(TAG, "write failed path=" + path + ", reason=" + ignored.getMessage());
+            Log.e(TAG, "write failed path=" + path + ", reason=" + ignored.getMessage(), ignored);
             return false;
         }
     }

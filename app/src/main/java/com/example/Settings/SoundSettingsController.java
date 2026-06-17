@@ -24,6 +24,7 @@ public class SoundSettingsController implements SettingsContentController {
 
     @Override
     public void bind(View view) {
+        Log.d(TAG, "bind: start");
         TextView valueView = view.findViewById(R.id.tv_sound_value);
         SeekBar seekBar = view.findViewById(R.id.seek_sound);
         int currentStreamVolume = readCurrentMusicVolume();
@@ -42,10 +43,12 @@ public class SoundSettingsController implements SettingsContentController {
                 applyMusicVolume(progress);
             }
         });
+        Log.d(TAG, "bind: end");
     }
 
     private int readCurrentMusicVolume() {
         if (audioManager == null) {
+            Log.w(TAG, "readCurrentMusicVolume: audioManager is null");
             return 0;
         }
         int max = Math.max(1, audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC));
@@ -56,6 +59,7 @@ public class SoundSettingsController implements SettingsContentController {
 
     private void applyMusicVolume(int level) {
         if (audioManager == null) {
+            Log.e(TAG, "applyMusicVolume: audioManager is null");
             return;
         }
 
@@ -66,7 +70,11 @@ public class SoundSettingsController implements SettingsContentController {
                 + ", max=" + max
                 + ", targetVolume=" + targetVolume);
 
-        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0);
-        Log.d(TAG, "afterSet: readBack=" + audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        try {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, targetVolume, 0);
+            Log.d(TAG, "afterSet: readBack=" + audioManager.getStreamVolume(AudioManager.STREAM_MUSIC));
+        } catch (RuntimeException e) {
+            Log.e(TAG, "applyMusicVolume: setStreamVolume failed", e);
+        }
     }
 }

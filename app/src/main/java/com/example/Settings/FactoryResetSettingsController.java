@@ -35,7 +35,7 @@ public class FactoryResetSettingsController implements SettingsContentController
 
     private void openSystemFactoryResetPage() {
         try {
-            Log.d(TAG, "openSystemFactoryResetPage: start");
+            Log.w(TAG, "openSystemFactoryResetPage: preparing to launch system reset page");
             Intent intent = new Intent(Intent.ACTION_MAIN);
             intent.setClassName(SETTINGS_PACKAGE, SETTINGS_SUB_SETTINGS);
             intent.putExtra(EXTRA_SHOW_FRAGMENT, SETTINGS_MASTER_CLEAR_FRAGMENT);

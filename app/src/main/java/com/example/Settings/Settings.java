@@ -22,8 +22,11 @@ import com.example.ahd_camera.Utils;
 
 import java.util.Arrays;
 import java.util.List;
+import android.util.Log;
 
 public class Settings extends AppCompatActivity {
+
+    private static final String TAG = "Settings";
 
     private RecyclerView rvLeftMenu;
     private FrameLayout rightContentContainer;
@@ -33,6 +36,7 @@ public class Settings extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Log.d(TAG, "onCreate: start");
         Utils.prepareFullscreenWindow(getWindow());
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
@@ -47,16 +51,20 @@ public class Settings extends AppCompatActivity {
 
         initView();
         initMenu();
+        Log.d(TAG, "onCreate: end");
     }
 
     private void initView() {
+        Log.d(TAG, "initView: start");
         rvLeftMenu = findViewById(R.id.rv_left_menu);
         rightContentContainer = findViewById(R.id.right_content_container);
         rvLeftMenu.setFocusable(true);
         rvLeftMenu.setFocusableInTouchMode(true);
+        Log.d(TAG, "initView: end");
     }
 
     private void initMenu() {
+        Log.d(TAG, "initMenu: start");
         menuList = Arrays.asList(
                 getString(R.string.settings_menu_language),
                 getString(R.string.settings_menu_time),
@@ -70,6 +78,7 @@ public class Settings extends AppCompatActivity {
 
         rvLeftMenu.setLayoutManager(new LinearLayoutManager(this));
         menuAdapter = new SettingMenuAdapter(menuList, (position, name) -> {
+            Log.d(TAG, "menu click: position=" + position + ", name=" + name);
             showRightContent(position);
             enterRightContent();
         });
@@ -79,28 +88,40 @@ public class Settings extends AppCompatActivity {
             rvLeftMenu.requestFocus();
             focusLeftMenuItem(menuAdapter.getSelectedPosition());
         });
+        Log.d(TAG, "initMenu: end, menuSize=" + menuList.size());
     }
 
     private void showRightContent(int position) {
-        if (currentController != null) {
-            currentController.onHide();
+        Log.d(TAG, "showRightContent: position=" + position);
+        try {
+            if (currentController != null) {
+                currentController.onHide();
+            }
+
+            rightContentContainer.removeAllViews();
+
+            int layoutId = getLayoutId(position);
+            View view = LayoutInflater.from(this).inflate(layoutId, rightContentContainer, false);
+            rightContentContainer.addView(view);
+
+            currentController = createController(position);
+            currentController.bind(view);
+            currentController.onShow();
+            Log.d(TAG, "showRightContent: layoutId=" + layoutId
+                    + ", controller=" + currentController.getClass().getSimpleName());
+        } catch (RuntimeException e) {
+            Log.e(TAG, "showRightContent: failed for position=" + position, e);
+            throw e;
         }
-
-        rightContentContainer.removeAllViews();
-
-        int layoutId = getLayoutId(position);
-        View view = LayoutInflater.from(this).inflate(layoutId, rightContentContainer, false);
-        rightContentContainer.addView(view);
-
-        currentController = createController(position);
-        currentController.bind(view);
-        currentController.onShow();
     }
 
     private void enterRightContent() {
         View firstFocusable = findFirstFocusable(rightContentContainer);
         if (firstFocusable != null) {
+            Log.d(TAG, "enterRightContent: focus=" + firstFocusable.getClass().getSimpleName());
             firstFocusable.requestFocus();
+        } else {
+            Log.w(TAG, "enterRightContent: no focusable view found");
         }
     }
 
@@ -143,22 +164,28 @@ public class Settings extends AppCompatActivity {
 
     private void focusLeftMenuItem(int position) {
         if (menuAdapter == null) {
+            Log.w(TAG, "focusLeftMenuItem: adapter is null");
             return;
         }
 
         RecyclerView.ViewHolder holder = rvLeftMenu.findViewHolderForAdapterPosition(position);
         if (holder != null) {
+            Log.d(TAG, "focusLeftMenuItem: position=" + position);
             holder.itemView.requestFocus();
+        } else {
+            Log.w(TAG, "focusLeftMenuItem: holder not attached, position=" + position);
         }
     }
 
     private void moveMenuSelection(int delta) {
         if (menuAdapter == null || menuList == null || menuList.isEmpty()) {
+            Log.w(TAG, "moveMenuSelection: menu not ready");
             return;
         }
 
         int size = menuList.size();
         int nextPosition = (menuAdapter.getSelectedPosition() + delta + size) % size;
+        Log.d(TAG, "moveMenuSelection: delta=" + delta + ", nextPosition=" + nextPosition);
         menuAdapter.setSelectedPosition(nextPosition);
         rvLeftMenu.scrollToPosition(nextPosition);
         rvLeftMenu.post(() -> focusLeftMenuItem(nextPosition));
@@ -184,6 +211,7 @@ public class Settings extends AppCompatActivity {
             case 7:
                 return R.layout.layout_factory_reset;
             default:
+                Log.w(TAG, "getLayoutId: unknown position=" + position + ", fallback to language page");
                 return R.layout.layout_language;
         }
     }
@@ -207,6 +235,7 @@ public class Settings extends AppCompatActivity {
             case 7:
                 return new FactoryResetSettingsController(this);
             default:
+                Log.w(TAG, "createController: unknown position=" + position + ", use NoOpSettingsController");
                 return new NoOpSettingsController();
         }
     }
@@ -214,6 +243,7 @@ public class Settings extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        Log.d(TAG, "onResume");
         Utils.hideSystemUI(getWindow());
         if (currentController != null) {
             currentController.onShow();
@@ -222,6 +252,7 @@ public class Settings extends AppCompatActivity {
 
     @Override
     protected void onPause() {
+        Log.d(TAG, "onPause");
         if (currentController != null) {
             currentController.onHide();
         }
@@ -231,6 +262,7 @@ public class Settings extends AppCompatActivity {
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        Log.d(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus);
         if (hasFocus) {
             Utils.hideSystemUI(getWindow());
         }
@@ -248,6 +280,7 @@ public class Settings extends AppCompatActivity {
 
         if (focusIsRightPane) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                Log.d(TAG, "dispatchKeyEvent: escape from right pane");
                 rvLeftMenu.requestFocus();
                 rvLeftMenu.post(() -> focusLeftMenuItem(menuAdapter != null ? menuAdapter.getSelectedPosition() : 0));
                 return true;
@@ -260,6 +293,7 @@ public class Settings extends AppCompatActivity {
                     int delta = event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
                     int nextProgress = Math.max(0, Math.min(seekBar.getProgress() + delta, seekBar.getMax()));
                     if (nextProgress != seekBar.getProgress()) {
+                        Log.d(TAG, "dispatchKeyEvent: adjust seekbar progress=" + nextProgress);
                         seekBar.setProgress(nextProgress);
                     }
                     return true;
@@ -293,6 +327,7 @@ public class Settings extends AppCompatActivity {
                 if (direction != -1) {
                     View nextFocus = currentFocus.focusSearch(direction);
                     if (nextFocus == null || isDescendant(nextFocus, rvLeftMenu)) {
+                        Log.w(TAG, "dispatchKeyEvent: blocked focus jump back to menu");
                         return true;
                     }
                 }
@@ -304,15 +339,19 @@ public class Settings extends AppCompatActivity {
         if (focusIsLeftMenu || currentFocus == null) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_DPAD_UP:
+                    Log.d(TAG, "dispatchKeyEvent: move menu up");
                     moveMenuSelection(-1);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_DOWN:
+                    Log.d(TAG, "dispatchKeyEvent: move menu down");
                     moveMenuSelection(1);
                     return true;
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    Log.d(TAG, "dispatchKeyEvent: enter right pane");
                     return true;
                 case KeyEvent.KEYCODE_DPAD_CENTER:
                 case KeyEvent.KEYCODE_ENTER:
+                    Log.d(TAG, "dispatchKeyEvent: enter right content");
                     enterRightContent();
                     return true;
                 default:
