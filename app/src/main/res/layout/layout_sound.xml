@@ -24,10 +24,12 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
             android:max="10"
             android:progress="8"
-            android:progressTint="@color/settings_slider_fill"
-            android:thumbTint="@color/settings_slider_fill" />
+            android:progressTint="@color/seekbar_track_tint"
+            android:thumb="@drawable/seekbar_thumb_selector" />
 
         <TextView
             android:id="@+id/tv_sound_value"

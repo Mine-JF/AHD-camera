@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 禁用状态 -->
     <item android:state_enabled="false">
         <shape>
             <solid android:color="@color/settings_button_disabled_fill" />
@@ -9,24 +10,41 @@
                 android:color="@color/settings_button_disabled_stroke" />
         </shape>
     </item>
-    <item android:state_selected="true">
-        <shape>
-            <solid android:color="@color/settings_button_selected_fill" />
-            <corners android:radius="12dp" />
-            <stroke
-                android:width="3dp"
-                android:color="@color/settings_button_selected_stroke" />
-        </shape>
-    </item>
+
+    <!-- 按下 OK 的状态 -->
     <item android:state_pressed="true">
         <shape>
             <solid android:color="@color/settings_button_selected_fill" />
             <corners android:radius="12dp" />
             <stroke
-                android:width="3dp"
-                android:color="@color/settings_button_selected_stroke" />
+                android:width="4dp"
+                android:color="#FFFF00" />
         </shape>
     </item>
+
+    <!-- 当前焦点状态：上下左右移动到这个按钮时显示 -->
+    <item android:state_focused="true">
+        <shape>
+            <solid android:color="@color/settings_button_default_fill" />
+            <corners android:radius="12dp" />
+            <stroke
+                android:width="4dp"
+                android:color="#FFFF00" />
+        </shape>
+    </item>
+
+    <!-- 已选中状态，可选 -->
+    <item android:state_selected="true">
+        <shape>
+            <solid android:color="@color/settings_button_default_fill" />
+            <corners android:radius="12dp" />
+            <stroke
+                android:width="4dp"
+                android:color="@color/settings_button_default_stroke" />
+        </shape>
+    </item>
+
+    <!-- 默认状态 -->
     <item>
         <shape>
             <solid android:color="@color/settings_button_default_fill" />

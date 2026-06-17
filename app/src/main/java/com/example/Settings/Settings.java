@@ -1,9 +1,13 @@
 package com.example.Settings;
 
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.FrameLayout;
+import android.widget.SeekBar;
 
 import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
@@ -24,6 +28,7 @@ public class Settings extends AppCompatActivity {
     private RecyclerView rvLeftMenu;
     private FrameLayout rightContentContainer;
     private SettingsContentController currentController;
+    private SettingMenuAdapter menuAdapter;
     private List<String> menuList;
 
     @Override
@@ -47,6 +52,8 @@ public class Settings extends AppCompatActivity {
     private void initView() {
         rvLeftMenu = findViewById(R.id.rv_left_menu);
         rightContentContainer = findViewById(R.id.right_content_container);
+        rvLeftMenu.setFocusable(true);
+        rvLeftMenu.setFocusableInTouchMode(true);
     }
 
     private void initMenu() {
@@ -62,9 +69,16 @@ public class Settings extends AppCompatActivity {
         );
 
         rvLeftMenu.setLayoutManager(new LinearLayoutManager(this));
-        SettingMenuAdapter adapter = new SettingMenuAdapter(menuList, (position, name) -> showRightContent(position));
-        rvLeftMenu.setAdapter(adapter);
+        menuAdapter = new SettingMenuAdapter(menuList, (position, name) -> {
+            showRightContent(position);
+            enterRightContent();
+        });
+        rvLeftMenu.setAdapter(menuAdapter);
         showRightContent(0);
+        rvLeftMenu.post(() -> {
+            rvLeftMenu.requestFocus();
+            focusLeftMenuItem(menuAdapter.getSelectedPosition());
+        });
     }
 
     private void showRightContent(int position) {
@@ -81,6 +95,74 @@ public class Settings extends AppCompatActivity {
         currentController = createController(position);
         currentController.bind(view);
         currentController.onShow();
+    }
+
+    private void enterRightContent() {
+        View firstFocusable = findFirstFocusable(rightContentContainer);
+        if (firstFocusable != null) {
+            firstFocusable.requestFocus();
+        }
+    }
+
+    private View findFirstFocusable(View view) {
+        if (view == null || view.getVisibility() != View.VISIBLE) {
+            return null;
+        }
+        if (view.isFocusable() && view.isEnabled()) {
+            return view;
+        }
+        if (!(view instanceof ViewGroup)) {
+            return null;
+        }
+
+        ViewGroup group = (ViewGroup) view;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            View focusable = findFirstFocusable(child);
+            if (focusable != null) {
+                return focusable;
+            }
+        }
+        return null;
+    }
+
+    private boolean isDescendant(View child, View parent) {
+        if (child == null || parent == null) {
+            return false;
+        }
+        View current = child;
+        while (current != null) {
+            if (current == parent) {
+                return true;
+            }
+            ViewParent viewParent = current.getParent();
+            current = viewParent instanceof View ? (View) viewParent : null;
+        }
+        return false;
+    }
+
+    private void focusLeftMenuItem(int position) {
+        if (menuAdapter == null) {
+            return;
+        }
+
+        RecyclerView.ViewHolder holder = rvLeftMenu.findViewHolderForAdapterPosition(position);
+        if (holder != null) {
+            holder.itemView.requestFocus();
+        }
+    }
+
+    private void moveMenuSelection(int delta) {
+        if (menuAdapter == null || menuList == null || menuList.isEmpty()) {
+            return;
+        }
+
+        int size = menuList.size();
+        int nextPosition = (menuAdapter.getSelectedPosition() + delta + size) % size;
+        menuAdapter.setSelectedPosition(nextPosition);
+        rvLeftMenu.scrollToPosition(nextPosition);
+        rvLeftMenu.post(() -> focusLeftMenuItem(nextPosition));
+        showRightContent(nextPosition);
     }
 
     private int getLayoutId(int position) {
@@ -152,5 +234,92 @@ public class Settings extends AppCompatActivity {
         if (hasFocus) {
             Utils.hideSystemUI(getWindow());
         }
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() != KeyEvent.ACTION_DOWN) {
+            return super.dispatchKeyEvent(event);
+        }
+
+        View currentFocus = getCurrentFocus();
+        boolean focusIsLeftMenu = isDescendant(currentFocus, rvLeftMenu);
+        boolean focusIsRightPane = isDescendant(currentFocus, rightContentContainer);
+
+        if (focusIsRightPane) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+                rvLeftMenu.requestFocus();
+                rvLeftMenu.post(() -> focusLeftMenuItem(menuAdapter != null ? menuAdapter.getSelectedPosition() : 0));
+                return true;
+            }
+
+            if (currentFocus instanceof SeekBar) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT
+                        || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    SeekBar seekBar = (SeekBar) currentFocus;
+                    int delta = event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+                    int nextProgress = Math.max(0, Math.min(seekBar.getProgress() + delta, seekBar.getMax()));
+                    if (nextProgress != seekBar.getProgress()) {
+                        seekBar.setProgress(nextProgress);
+                    }
+                    return true;
+                }
+                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP
+                        || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    return true;
+                }
+            }
+
+            if (currentFocus != null) {
+                int direction;
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_DPAD_LEFT:
+                        direction = View.FOCUS_LEFT;
+                        break;
+                    case KeyEvent.KEYCODE_DPAD_RIGHT:
+                        direction = View.FOCUS_RIGHT;
+                        break;
+                    case KeyEvent.KEYCODE_DPAD_UP:
+                        direction = View.FOCUS_UP;
+                        break;
+                    case KeyEvent.KEYCODE_DPAD_DOWN:
+                        direction = View.FOCUS_DOWN;
+                        break;
+                    default:
+                        direction = -1;
+                        break;
+                }
+
+                if (direction != -1) {
+                    View nextFocus = currentFocus.focusSearch(direction);
+                    if (nextFocus == null || isDescendant(nextFocus, rvLeftMenu)) {
+                        return true;
+                    }
+                }
+            }
+
+            return super.dispatchKeyEvent(event);
+        }
+
+        if (focusIsLeftMenu || currentFocus == null) {
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    moveMenuSelection(-1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    moveMenuSelection(1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_ENTER:
+                    enterRightContent();
+                    return true;
+                default:
+                    return super.dispatchKeyEvent(event);
+            }
+        }
+
+        return super.dispatchKeyEvent(event);
     }
 }

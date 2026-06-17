@@ -28,6 +28,7 @@
             android:layout_height="48dp"
             android:layout_gravity="center_horizontal"
             android:layout_marginTop="18dp"
+            style="@style/SettingsOptionButton.Large"
             android:background="@drawable/bg_settings_button_selector"
             android:minWidth="240dp"
             android:text="@string/settings_format"

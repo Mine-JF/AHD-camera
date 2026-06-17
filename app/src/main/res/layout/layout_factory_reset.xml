@@ -14,7 +14,8 @@
         <Button
             android:id="@+id/btn_factory_reset"
             android:layout_width="wrap_content"
-            android:layout_height="48dp"
+            android:layout_height="60dp"
+            style="@style/SettingsOptionButton.Large"
             android:background="@drawable/bg_settings_button_selector"
             android:minWidth="280dp"
             android:text="@string/settings_factory_reset_action"

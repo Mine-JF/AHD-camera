@@ -34,6 +34,27 @@ public class SettingMenuAdapter extends RecyclerView.Adapter<SettingMenuAdapter.
         this.listener = listener;
     }
 
+    public int getSelectedPosition() {
+        return selectedPosition;
+    }
+
+    public void setSelectedPosition(int position) {
+        if (menuList == null || menuList.isEmpty()) {
+            selectedPosition = 0;
+            return;
+        }
+
+        int clampedPosition = Math.max(0, Math.min(position, menuList.size() - 1));
+        if (selectedPosition == clampedPosition) {
+            return;
+        }
+
+        int oldPosition = selectedPosition;
+        selectedPosition = clampedPosition;
+        notifyItemChanged(oldPosition);
+        notifyItemChanged(selectedPosition);
+    }
+
     @Override
     public MenuViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
         View view = LayoutInflater.from(parent.getContext())
@@ -46,6 +67,8 @@ public class SettingMenuAdapter extends RecyclerView.Adapter<SettingMenuAdapter.
         String name = menuList.get(position);
 
         holder.tvMenuName.setText(name);
+        holder.itemView.setFocusable(true);
+        holder.itemView.setFocusableInTouchMode(true);
 
         boolean selected = position == selectedPosition;
         holder.itemView.setSelected(selected);
@@ -61,11 +84,7 @@ public class SettingMenuAdapter extends RecyclerView.Adapter<SettingMenuAdapter.
                 return;
             }
 
-            int oldPosition = selectedPosition;
-            selectedPosition = adapterPosition;
-
-            notifyItemChanged(oldPosition);
-            notifyItemChanged(selectedPosition);
+            setSelectedPosition(adapterPosition);
 
             if (listener != null) {
                 listener.onMenuClick(selectedPosition, menuList.get(selectedPosition));
