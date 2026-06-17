@@ -4,6 +4,7 @@
     android:sharedUserId="android.uid.system">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MASTER_CLEAR" />
 
     <application
         android:allowBackup="true"

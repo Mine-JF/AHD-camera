@@ -24,20 +24,11 @@ public class Settings extends AppCompatActivity {
     private RecyclerView rvLeftMenu;
     private FrameLayout rightContentContainer;
     private SettingsContentController currentController;
-
-    private final List<String> menuList = Arrays.asList(
-            "语言",
-            "时间",
-            "计米",
-            "存储卡",
-            "显示",
-            "声音",
-            "系统信息",
-            "恢复出厂设置"
-    );
+    private List<String> menuList;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        Utils.prepareFullscreenWindow(getWindow());
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_settings);
@@ -59,6 +50,17 @@ public class Settings extends AppCompatActivity {
     }
 
     private void initMenu() {
+        menuList = Arrays.asList(
+                getString(R.string.settings_menu_language),
+                getString(R.string.settings_menu_time),
+                getString(R.string.settings_menu_count),
+                getString(R.string.settings_menu_storage_card),
+                getString(R.string.settings_menu_display),
+                getString(R.string.settings_menu_sound),
+                getString(R.string.settings_menu_system_info),
+                getString(R.string.settings_menu_factory_reset)
+        );
+
         rvLeftMenu.setLayoutManager(new LinearLayoutManager(this));
         SettingMenuAdapter adapter = new SettingMenuAdapter(menuList, (position, name) -> showRightContent(position));
         rvLeftMenu.setAdapter(adapter);
@@ -107,7 +109,7 @@ public class Settings extends AppCompatActivity {
     private SettingsContentController createController(int position) {
         switch (position) {
             case 0:
-                return new LanguageSettingsController();
+                return new LanguageSettingsController(this);
             case 1:
                 return new TimeSettingsController();
             case 2:
@@ -120,6 +122,8 @@ public class Settings extends AppCompatActivity {
                 return new SoundSettingsController(this);
             case 6:
                 return new SystemInfoSettingsController(this);
+            case 7:
+                return new FactoryResetSettingsController(this);
             default:
                 return new NoOpSettingsController();
         }

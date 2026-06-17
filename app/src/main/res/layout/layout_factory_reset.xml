@@ -12,6 +12,7 @@
         android:padding="22dp">
 
         <Button
+            android:id="@+id/btn_factory_reset"
             android:layout_width="wrap_content"
             android:layout_height="48dp"
             android:background="@drawable/bg_settings_button_selector"
