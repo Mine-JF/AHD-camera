@@ -270,14 +270,17 @@ public class Settings extends AppCompatActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // 只处理按下事件，避免按键抬起阶段重复触发。
         if (event.getAction() != KeyEvent.ACTION_DOWN) {
             return super.dispatchKeyEvent(event);
         }
 
+        // ESC 分层处理：右侧内容区返回左栏，左栏直接退出设置页。
         View currentFocus = getCurrentFocus();
         boolean focusIsLeftMenu = isDescendant(currentFocus, rvLeftMenu);
         boolean focusIsRightPane = isDescendant(currentFocus, rightContentContainer);
 
+        // 当前焦点在右侧内容区时，保留左右、上下的局部导航逻辑。
         if (focusIsRightPane) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
                 Log.d(TAG, "dispatchKeyEvent: escape from right pane");
@@ -336,8 +339,13 @@ public class Settings extends AppCompatActivity {
             return super.dispatchKeyEvent(event);
         }
 
+        // 当前焦点在左侧菜单或没有焦点时，使用方向键切换菜单项。
         if (focusIsLeftMenu || currentFocus == null) {
             switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_ESCAPE:
+                    Log.d(TAG, "dispatchKeyEvent: escape from left menu, finish settings");
+                    finish();
+                    return true;
                 case KeyEvent.KEYCODE_DPAD_UP:
                     Log.d(TAG, "dispatchKeyEvent: move menu up");
                     moveMenuSelection(-1);
