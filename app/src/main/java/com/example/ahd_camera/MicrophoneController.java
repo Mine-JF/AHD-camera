@@ -26,17 +26,13 @@ final class MicrophoneController {
         return enabled;
     }
 
-    // 切换板卡声卡的麦克风静音状态，返回切换后的“是否启用”结果。
-    boolean toggle() {
+    // 用于按住说话等明确的开/关场景，避免根据当前状态反转。
+    void setEnabled(boolean enabled) {
         if (audioManager == null) {
-            Log.w(TAG, "toggle: audioManager is null");
-            return true;
+            Log.w(TAG, "setEnabled: audioManager is null");
+            return;
         }
-        boolean currentMuted = audioManager.isMicrophoneMute();
-        boolean nextEnabled = currentMuted;
-        Log.d(TAG, "toggle: currentMuted=" + currentMuted + ", nextEnabled=" + nextEnabled);
-        audioManager.setMicrophoneMute(!nextEnabled);
-        Log.i(TAG, "toggle finished: enabled=" + nextEnabled);
-        return nextEnabled;
+        audioManager.setMicrophoneMute(!enabled);
+        Log.i(TAG, "setEnabled: enabled=" + enabled);
     }
 }

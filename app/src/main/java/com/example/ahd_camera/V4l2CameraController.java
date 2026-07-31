@@ -24,7 +24,7 @@ import java.util.Map;
 public class V4l2CameraController implements CameraPreviewController {
 
     private static final String TAG = "V4l2CameraController";
-    private static final int PIXEL_FORMAT_MJPEG = 0;
+    private static final int PIXEL_FORMAT_NV12 = 1;
     private static final int MAX_PREVIEW_WIDTH = 1280;
     private static final int MAX_PREVIEW_HEIGHT = 720;
     private static final long TOPOLOGY_POLL_MS = 1000L;
@@ -34,6 +34,12 @@ public class V4l2CameraController implements CameraPreviewController {
             "rsict",
             "uvc",
             "camera"
+    };
+    private static final String[] EXCLUDED_NODE_NAME_KEYWORDS = {
+            "luma",
+            "meta",
+            "embedded",
+            "stat"
     };
 
     private final CameraStatusCallback statusCallback;
@@ -128,7 +134,7 @@ public class V4l2CameraController implements CameraPreviewController {
 
     @Override
     public String[] getSelectedCameraIds() {
-        List<String> selected = selectUsbCameraNodes();
+        List<String> selected = selectCameraNodes();
         int count = Math.min(selected.size(), 2);
         String[] result = selected.subList(0, count).toArray(new String[0]);
         Log.d(TAG, "getSelectedCameraIds: selected=" + Arrays.toString(result)
@@ -136,48 +142,71 @@ public class V4l2CameraController implements CameraPreviewController {
         return result;
     }
 
-    private List<String> selectUsbCameraNodes() {
+    private List<String> selectCameraNodes() {
         File sysfsDir = new File(SYSFS_VIDEO4LINUX_DIR);
         File[] videoEntries = sysfsDir.listFiles(file -> file.isDirectory() && file.getName().startsWith("video"));
         if (videoEntries == null || videoEntries.length == 0) {
-            Log.w(TAG, "selectUsbCameraNodes: no sysfs video entries under " + SYSFS_VIDEO4LINUX_DIR);
+            Log.w(TAG, "selectCameraNodes: no sysfs video entries under " + SYSFS_VIDEO4LINUX_DIR);
             return Collections.emptyList();
         }
 
         Arrays.sort(videoEntries, Comparator.comparing(File::getName));
 
         Map<String, List<VideoNodeInfo>> groupedUsbNodes = new LinkedHashMap<>();
+        List<VideoNodeInfo> platformCandidates = new ArrayList<>();
         for (File entry : videoEntries) {
             VideoNodeInfo info = readVideoNodeInfo(entry);
             if (info == null) {
                 continue;
             }
-            Log.d(TAG, "selectUsbCameraNodes inspect: " + info);
+            Log.d(TAG, "selectCameraNodes inspect: " + info);
+            if (!looksLikeCaptureNode(info.displayName)) {
+                Log.d(TAG, "selectCameraNodes skip non-preview node: " + info.devPath
+                        + ", name=" + info.displayName);
+                continue;
+            }
             if (!info.isUsb) {
+                platformCandidates.add(info);
                 continue;
             }
             if (!looksLikeUsbCamera(info.displayName)) {
-                Log.d(TAG, "selectUsbCameraNodes skip non-camera usb node: " + info.devPath
+                Log.d(TAG, "selectCameraNodes skip non-camera usb node: " + info.devPath
                         + ", name=" + info.displayName);
                 continue;
             }
             groupedUsbNodes.computeIfAbsent(info.groupKey, ignored -> new ArrayList<>()).add(info);
         }
 
-        if (groupedUsbNodes.isEmpty()) {
-            Log.w(TAG, "selectUsbCameraNodes: no matching usb camera groups");
-            return Collections.emptyList();
+        if (!groupedUsbNodes.isEmpty()) {
+            return chooseOneNodePerGroup(groupedUsbNodes, "usb");
+        }
+        Log.w(TAG, "selectCameraNodes: no matching usb camera groups, fallback to platform nodes");
+        if (!platformCandidates.isEmpty()) {
+            platformCandidates.sort(Comparator
+                    .comparingInt((VideoNodeInfo info) -> info.index == Integer.MAX_VALUE ? Integer.MAX_VALUE : info.index)
+                    .thenComparingInt(info -> info.videoNumber));
+            List<String> selected = new ArrayList<>();
+            VideoNodeInfo primaryNode = platformCandidates.get(0);
+            selected.add(primaryNode.devPath);
+            Log.i(TAG, "selectCameraNodes fallback choose primary platform node: " + selected
+                    + ", node=" + primaryNode + ", allCandidates=" + platformCandidates);
+            return selected;
         }
 
+        Log.w(TAG, "selectCameraNodes: no platform candidates, fallback to raw /dev/video* scan");
+        return fallbackSelectVideoNodes();
+    }
+
+    private List<String> chooseOneNodePerGroup(Map<String, List<VideoNodeInfo>> groupedNodes, String sourceLabel) {
         List<String> selected = new ArrayList<>();
-        for (Map.Entry<String, List<VideoNodeInfo>> groupEntry : groupedUsbNodes.entrySet()) {
+        for (Map.Entry<String, List<VideoNodeInfo>> groupEntry : groupedNodes.entrySet()) {
             List<VideoNodeInfo> groupNodes = groupEntry.getValue();
             groupNodes.sort(Comparator
                     .comparingInt((VideoNodeInfo info) -> info.index == Integer.MAX_VALUE ? Integer.MAX_VALUE : info.index)
                     .thenComparingInt(info -> info.videoNumber));
             VideoNodeInfo chosen = groupNodes.get(0);
             selected.add(chosen.devPath);
-            Log.i(TAG, "selectUsbCameraNodes choose: group=" + groupEntry.getKey()
+            Log.i(TAG, "chooseOneNodePerGroup(" + sourceLabel + ") choose: group=" + groupEntry.getKey()
                     + ", chosen=" + chosen.devPath
                     + ", name=" + chosen.displayName
                     + ", index=" + chosen.index
@@ -253,6 +282,19 @@ public class V4l2CameraController implements CameraPreviewController {
             }
         }
         return false;
+    }
+
+    private boolean looksLikeCaptureNode(String displayName) {
+        if (displayName == null || displayName.trim().isEmpty()) {
+            return true;
+        }
+        String normalized = displayName.toLowerCase(Locale.US);
+        for (String excluded : EXCLUDED_NODE_NAME_KEYWORDS) {
+            if (normalized.contains(excluded)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private String buildGroupKey(String deviceRealPath, String fallbackName) {
@@ -430,7 +472,7 @@ public class V4l2CameraController implements CameraPreviewController {
                     requestedDevicePath,
                     requestWidth,
                     requestHeight,
-                    PIXEL_FORMAT_MJPEG
+                    PIXEL_FORMAT_NV12
             );
             if (handle == 0L) {
                 Log.e(TAG, "startPreview: native open failed, slot=" + slot.label

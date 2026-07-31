@@ -1,11 +1,12 @@
 #include <jni.h>
-#include <android/bitmap.h>
-#include <android/imagedecoder.h>
 #include <android/log.h>
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 
 #include <linux/videodev2.h>
+
+#include "im2d.h"
+#include "rga.h"
 
 #include <algorithm>
 #include <atomic>
@@ -15,15 +16,18 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <thread>
+#include <chrono>
 #include <vector>
 
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <termios.h>
 #include <unistd.h>
 
 namespace {
@@ -32,35 +36,55 @@ constexpr const char* kTag = "ahd_v4l2_jni";
 constexpr uint32_t kDefaultBufferCount = 4;
 constexpr int kPollTimeoutMs = 1500;
 constexpr uint32_t kTargetFps = 30;
-std::mutex g_last_error_mutex;
-std::string g_last_error;
 
 enum PixelFormat : jint {
-    PIXEL_FORMAT_MJPEG = 0,
+    PIXEL_FORMAT_NV12 = 1,
 };
+
+constexpr int kRgaFormatRgba8888 = 0x0 << 8;
+constexpr int kRgaFormatNv16 = 0x8 << 8;
+constexpr int kRgaFormatNv12 = 0xa << 8;
+constexpr int kRgaFormatNv61 = 0xc << 8;
+constexpr int kRgaFormatNv21 = 0xe << 8;
+constexpr int kRgaFormatYvyu422 = 0x18 << 8;
+constexpr int kRgaFormatVyuy422 = 0x1a << 8;
+constexpr int kRgaFormatYuyv422 = 0x1c << 8;
+constexpr int kRgaFormatUyvy422 = 0x1e << 8;
+
+std::mutex gLastErrorMutex;
+std::string gLastError;
+std::mutex gMotorMutex;
+int gMotorFd = -1;
+uint8_t gMotorSequence = 0;
 
 struct MappedBuffer {
     void* start = nullptr;
     size_t length = 0;
+    int dmaFd = -1;
 };
 
 struct CameraContext {
-    std::string device_path;
+    std::string devicePath;
     int fd = -1;
     uint32_t width = 0;
     uint32_t height = 0;
-    uint32_t requested_width = 0;
-    uint32_t requested_height = 0;
-    uint32_t requested_fps = kTargetFps;
-    uint32_t pixel_format = V4L2_PIX_FMT_MJPEG;
+    uint32_t requestedWidth = 0;
+    uint32_t requestedHeight = 0;
+    uint32_t requestedFps = kTargetFps;
+    uint32_t pixelFormat = V4L2_PIX_FMT_NV12;
+    uint32_t bytesPerLine = 0;
+    uint32_t sizeImage = 0;
+    v4l2_buf_type bufferType = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    uint32_t planeCount = 1;
     bool configured = false;
     bool streaming = false;
-    bool preview_started = false;
+    bool previewStarted = false;
     std::vector<MappedBuffer> buffers;
-    std::vector<uint8_t> rgba_buffer;
+    std::vector<uint8_t> rgbaBuffer;
     ANativeWindow* window = nullptr;
-    std::thread preview_thread;
-    std::atomic<bool> stop_requested{false};
+    std::thread previewThread;
+    std::atomic<bool> stopRequested{false};
+    uint32_t renderedFrameCount = 0;
     std::mutex mutex;
 };
 
@@ -72,8 +96,8 @@ void LogPrint(int priority, const char* fmt, ...) {
 }
 
 void SetLastError(const std::string& error) {
-    std::lock_guard<std::mutex> lock(g_last_error_mutex);
-    g_last_error = error;
+    std::lock_guard<std::mutex> lock(gLastErrorMutex);
+    gLastError = error;
 }
 
 void ClearLastError() {
@@ -81,8 +105,8 @@ void ClearLastError() {
 }
 
 std::string ReadLastError() {
-    std::lock_guard<std::mutex> lock(g_last_error_mutex);
-    return g_last_error;
+    std::lock_guard<std::mutex> lock(gLastErrorMutex);
+    return gLastError;
 }
 
 std::string ErrnoMessage(const std::string& prefix) {
@@ -103,12 +127,10 @@ std::string JStringToUtf8(JNIEnv* env, jstring value) {
     if (value == nullptr) {
         return "";
     }
-
     const char* chars = env->GetStringUTFChars(value, nullptr);
     if (chars == nullptr) {
         return "";
     }
-
     std::string result(chars);
     env->ReleaseStringUTFChars(value, chars);
     return result;
@@ -122,11 +144,34 @@ int IoctlRetry(int fd, unsigned long request, void* arg) {
     return result;
 }
 
-uint32_t ResolvePixelFormat(jint pixel_format) {
-    switch (pixel_format) {
-        case PIXEL_FORMAT_MJPEG:
+uint32_t ResolvePixelFormat(jint pixelFormat) {
+    switch (pixelFormat) {
+        case PIXEL_FORMAT_NV12:
         default:
-            return V4L2_PIX_FMT_MJPEG;
+            return V4L2_PIX_FMT_NV12;
+    }
+}
+
+int ResolveRgaFormat(uint32_t pixelFormat) {
+    switch (pixelFormat) {
+        case V4L2_PIX_FMT_NV16:
+            return kRgaFormatNv16;
+        case V4L2_PIX_FMT_NV61:
+            return kRgaFormatNv61;
+        case V4L2_PIX_FMT_NV12:
+            return kRgaFormatNv12;
+        case V4L2_PIX_FMT_NV21:
+            return kRgaFormatNv21;
+        case V4L2_PIX_FMT_YUYV:
+            return kRgaFormatYuyv422;
+        case V4L2_PIX_FMT_YVYU:
+            return kRgaFormatYvyu422;
+        case V4L2_PIX_FMT_UYVY:
+            return kRgaFormatUyvy422;
+        case V4L2_PIX_FMT_VYUY:
+            return kRgaFormatVyuy422;
+        default:
+            return -1;
     }
 }
 
@@ -139,20 +184,23 @@ void ReleaseWindow(CameraContext* context) {
 
 void StopStreamingLocked(CameraContext* context) {
     if (context->streaming && context->fd >= 0) {
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        enum v4l2_buf_type type = context->bufferType;
         if (IoctlRetry(context->fd, VIDIOC_STREAMOFF, &type) == -1) {
             LogPrint(ANDROID_LOG_WARN, "VIDIOC_STREAMOFF failed for %s: %s",
-                    context->device_path.c_str(), strerror(errno));
+                    context->devicePath.c_str(), strerror(errno));
         }
     }
     context->streaming = false;
-    context->preview_started = false;
+    context->previewStarted = false;
 }
 
 void UnmapBuffers(CameraContext* context) {
     for (const auto& buffer : context->buffers) {
         if (buffer.start != nullptr && buffer.length > 0) {
             munmap(buffer.start, buffer.length);
+        }
+        if (buffer.dmaFd >= 0) {
+            close(buffer.dmaFd);
         }
     }
     context->buffers.clear();
@@ -163,6 +211,176 @@ void CloseDevice(CameraContext* context) {
         close(context->fd);
         context->fd = -1;
     }
+}
+
+void CloseMotorLocked() {
+    if (gMotorFd >= 0) {
+        close(gMotorFd);
+        gMotorFd = -1;
+    }
+}
+
+bool ConfigureMotorSerial(int fd) {
+    termios settings{};
+    if (tcgetattr(fd, &settings) == -1) {
+        SetLastError(ErrnoMessage("tcgetattr failed for /dev/ttyS3"));
+        return false;
+    }
+    cfmakeraw(&settings);
+    if (cfsetispeed(&settings, B115200) == -1 || cfsetospeed(&settings, B115200) == -1) {
+        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 115200 baud"));
+        return false;
+    }
+    settings.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
+    settings.c_cflag &= static_cast<tcflag_t>(~(PARENB | CSTOPB | CSIZE));
+    settings.c_cflag |= CS8;
+    settings.c_cc[VMIN] = 0;
+    settings.c_cc[VTIME] = 0;
+    if (tcsetattr(fd, TCSANOW, &settings) == -1) {
+        SetLastError(ErrnoMessage("tcsetattr failed for /dev/ttyS3"));
+        return false;
+    }
+    return true;
+}
+
+bool SendSerialCommandLocked(uint8_t deviceId, uint8_t command, uint8_t level) {
+    if (gMotorFd < 0) {
+        SetLastError("Motor serial port is not open");
+        return false;
+    }
+    // 0x05/0x06 是 VCM 档位，0x10 是补光灯亮度；这三条命令帧需要携带 1 字节数据。
+    const bool hasLevel = deviceId == 0x01
+            && (command == 0x05 || command == 0x06 || command == 0x10);
+    const uint8_t length = hasLevel ? 1 : 0;
+    const uint8_t sequence = gMotorSequence++;
+    uint8_t checksum = static_cast<uint8_t>(deviceId ^ sequence ^ command ^ length);
+    if (hasLevel) {
+        checksum ^= level;
+    }
+
+    // 帧格式：55 AA DEV_ID SEQ CMD LEN [DATA] CHECKSUM 0D 0A。
+    uint8_t frame[10] = {0x55, 0xaa, deviceId, sequence, command, length, level, checksum, 0x0d, 0x0a};
+    const size_t frameLength = hasLevel ? 10 : 9;
+    if (!hasLevel) {
+        frame[6] = checksum;
+        frame[7] = 0x0d;
+        frame[8] = 0x0a;
+    }
+
+    size_t sent = 0;
+    while (sent < frameLength) {
+        const ssize_t result = write(gMotorFd, frame + sent, frameLength - sent);
+        if (result > 0) {
+            sent += static_cast<size_t>(result);
+            continue;
+        }
+        if (result < 0 && errno == EINTR) {
+            continue;
+        }
+        SetLastError(ErrnoMessage("write failed for /dev/ttyS3"));
+        return false;
+    }
+    LogPrint(ANDROID_LOG_DEBUG, "RS485 command sent: device=%02x seq=%u command=%02x level=%u",
+            deviceId, sequence, command, level);
+    return true;
+}
+
+bool ReadCounterValueLocked(uint8_t expectedSequence, int32_t* counterValue) {
+    if (gMotorFd < 0 || counterValue == nullptr) {
+        SetLastError("Counter serial port is not open");
+        return false;
+    }
+
+    std::vector<uint8_t> received;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - std::chrono::steady_clock::now()).count();
+        pollfd pollFd{gMotorFd, POLLIN, 0};
+        const int pollResult = poll(&pollFd, 1, static_cast<int>(std::max<int64_t>(1, remaining)));
+        if (pollResult == 0) {
+            break;
+        }
+        if (pollResult < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            SetLastError(ErrnoMessage("poll failed for /dev/ttyS3"));
+            return false;
+        }
+
+        uint8_t buffer[64];
+        const ssize_t bytesRead = read(gMotorFd, buffer, sizeof(buffer));
+        if (bytesRead < 0) {
+            if (errno == EINTR || errno == EAGAIN) {
+                continue;
+            }
+            SetLastError(ErrnoMessage("read failed for /dev/ttyS3"));
+            return false;
+        }
+        if (bytesRead == 0) {
+            continue;
+        }
+        received.insert(received.end(), buffer, buffer + bytesRead);
+
+        while (received.size() >= 9) {
+            if (received[0] != 0x55 || received[1] != 0xaa) {
+                received.erase(received.begin());
+                continue;
+            }
+            const size_t frameLength = 9 + received[5];
+            if (received[5] > 32) {
+                received.erase(received.begin());
+                continue;
+            }
+            if (received.size() < frameLength) {
+                break;
+            }
+            if (received[frameLength - 2] != 0x0d || received[frameLength - 1] != 0x0a) {
+                received.erase(received.begin());
+                continue;
+            }
+            uint8_t checksum = 0;
+            for (size_t index = 2; index < frameLength - 3; ++index) {
+                checksum ^= received[index];
+            }
+            if (checksum != received[frameLength - 3]) {
+                received.erase(received.begin());
+                continue;
+            }
+
+            const uint8_t deviceId = received[2];
+            const uint8_t sequence = received[3];
+            const uint8_t command = received[4];
+            const uint8_t length = received[5];
+            const bool activeReport = deviceId == 0x02 && command == 0x01 && length == 4;
+            const bool queryResponse = deviceId == 0x02 && sequence == expectedSequence
+                    && command == 0x81 && length == 6 && received[6] == 0x01 && received[7] == 0x00;
+            if (activeReport || queryResponse) {
+                const size_t valueIndex = activeReport ? 6 : 8;
+                const uint32_t unsignedValue = (static_cast<uint32_t>(received[valueIndex]) << 24)
+                        | (static_cast<uint32_t>(received[valueIndex + 1]) << 16)
+                        | (static_cast<uint32_t>(received[valueIndex + 2]) << 8)
+                        | static_cast<uint32_t>(received[valueIndex + 3]);
+                *counterValue = static_cast<int32_t>(unsignedValue);
+                return true;
+            }
+            received.erase(received.begin(), received.begin() + frameLength);
+        }
+    }
+    SetLastError("Timed out waiting for DnkCounter response");
+    return false;
+}
+
+bool EnsureRgbaBuffer(CameraContext* context, int width, int height) {
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+    const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+    if (context->rgbaBuffer.size() != required) {
+        context->rgbaBuffer.resize(required);
+    }
+    return true;
 }
 
 bool CopyRgbToWindow(const uint8_t* rgba, int width, int height, ANativeWindow* window) {
@@ -180,146 +398,79 @@ bool CopyRgbToWindow(const uint8_t* rgba, int width, int height, ANativeWindow* 
         return false;
     }
 
-    const int dst_stride = static_cast<int>(buffer.stride) * 4;
-    const int src_stride = width * 4;
+    const int dstStride = static_cast<int>(buffer.stride) * 4;
+    const int srcStride = width * 4;
     auto* dst = static_cast<uint8_t*>(buffer.bits);
     for (int y = 0; y < height; ++y) {
-        std::memcpy(dst + y * dst_stride, rgba + y * src_stride, static_cast<size_t>(src_stride));
+        std::memcpy(dst + y * dstStride, rgba + y * srcStride, static_cast<size_t>(srcStride));
     }
 
     ANativeWindow_unlockAndPost(window);
     return true;
 }
 
-bool EnsureRgbaBuffer(CameraContext* context, int width, int height) {
-    if (width <= 0 || height <= 0) {
-        return false;
-    }
-    const size_t required = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
-    if (context->rgba_buffer.size() != required) {
-        context->rgba_buffer.resize(required);
-    }
-    return true;
-}
-
-inline uint8_t ClampToByte(int value) {
-    return static_cast<uint8_t>(std::clamp(value, 0, 255));
-}
-
-bool RenderYuyvFrame(CameraContext* context, const uint8_t* data, size_t length) {
-    if (context->window == nullptr || data == nullptr) {
+bool RenderFrame(CameraContext* context, const MappedBuffer& mapped, size_t bytesUsed) {
+    if (context->window == nullptr || mapped.dmaFd < 0) {
+        LogPrint(ANDROID_LOG_WARN, "RenderFrame skipped: window=%p dmaFd=%d",
+                context->window, mapped.dmaFd);
         return false;
     }
 
     const int width = static_cast<int>(context->width);
     const int height = static_cast<int>(context->height);
-    const size_t expected = static_cast<size_t>(width) * static_cast<size_t>(height) * 2;
-    if (length < expected) {
-        LogPrint(ANDROID_LOG_WARN, "YUYV frame too small: got=%zu expected=%zu", length, expected);
+    const int srcStride = static_cast<int>(context->bytesPerLine == 0 ? context->width : context->bytesPerLine);
+    const size_t expected = context->sizeImage != 0 ? static_cast<size_t>(context->sizeImage) : mapped.length;
+    if (bytesUsed < expected) {
+        LogPrint(ANDROID_LOG_WARN,
+                "Frame too small: format=%08x got=%zu expected=%zu stride=%d sizeImage=%u",
+                context->pixelFormat, bytesUsed, expected, srcStride, context->sizeImage);
+        return false;
+    }
+
+    const int srcFormat = ResolveRgaFormat(context->pixelFormat);
+    if (srcFormat < 0) {
+        LogPrint(ANDROID_LOG_WARN, "Unsupported preview pixel format: %08x", context->pixelFormat);
         return false;
     }
 
     if (!EnsureRgbaBuffer(context, width, height)) {
         return false;
     }
-    auto& rgba = context->rgba_buffer;
-    size_t src_index = 0;
-    size_t dst_index = 0;
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; x += 2) {
-            const int y0 = data[src_index + 0];
-            const int u = data[src_index + 1] - 128;
-            const int y1 = data[src_index + 2];
-            const int v = data[src_index + 3] - 128;
-            src_index += 4;
 
-            const auto write_pixel = [&](int y_value) {
-                const int c = y_value - 16;
-                const int d = u;
-                const int e = v;
-                const int r = (298 * c + 409 * e + 128) >> 8;
-                const int g = (298 * c - 100 * d - 208 * e + 128) >> 8;
-                const int b = (298 * c + 516 * d + 128) >> 8;
-                rgba[dst_index + 0] = ClampToByte(r);
-                rgba[dst_index + 1] = ClampToByte(g);
-                rgba[dst_index + 2] = ClampToByte(b);
-                rgba[dst_index + 3] = 255;
-                dst_index += 4;
-            };
+    rga_buffer_t src = wrapbuffer_fd_t(mapped.dmaFd, width, height, srcStride, height, srcFormat);
+    rga_buffer_t dst = wrapbuffer_virtualaddr_t(
+            context->rgbaBuffer.data(),
+            width,
+            height,
+            width,
+            height,
+            kRgaFormatRgba8888);
 
-            write_pixel(y0);
-            write_pixel(y1);
-        }
-    }
-
-    return CopyRgbToWindow(rgba.data(), width, height, context->window);
-}
-
-bool RenderMjpegFrame(CameraContext* context, const uint8_t* data, size_t length) {
-    if (context->window == nullptr || data == nullptr || length == 0) {
+    const IM_STATUS status = imcvtcolor(src, dst, srcFormat, kRgaFormatRgba8888);
+    if (status != IM_STATUS_SUCCESS) {
+        LogPrint(ANDROID_LOG_ERROR,
+                "RGA imcvtcolor failed: fd=%d format=%08x stride=%d sizeImage=%u status=%d msg=%s",
+                mapped.dmaFd, context->pixelFormat, srcStride, context->sizeImage, status, imStrError(status));
         return false;
     }
 
-    AImageDecoder* decoder = nullptr;
-    const int create_result = AImageDecoder_createFromBuffer(data, length, &decoder);
-    if (create_result != ANDROID_IMAGE_DECODER_SUCCESS || decoder == nullptr) {
-        LogPrint(ANDROID_LOG_WARN, "AImageDecoder_createFromBuffer failed: %d", create_result);
-        return false;
-    }
-
-    const AImageDecoderHeaderInfo* header = AImageDecoder_getHeaderInfo(decoder);
-    const int width = AImageDecoderHeaderInfo_getWidth(header);
-    const int height = AImageDecoderHeaderInfo_getHeight(header);
-    if (width <= 0 || height <= 0) {
-        AImageDecoder_delete(decoder);
-        LogPrint(ANDROID_LOG_WARN, "Decoded MJPEG header has invalid size: %dx%d", width, height);
-        return false;
-    }
-
-    AImageDecoder_setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888);
-    AImageDecoder_setUnpremultipliedRequired(decoder, false);
-
-    if (!EnsureRgbaBuffer(context, width, height)) {
-        AImageDecoder_delete(decoder);
-        return false;
-    }
-    auto& rgba = context->rgba_buffer;
-    const int decode_result = AImageDecoder_decodeImage(
-            decoder,
-            rgba.data(),
-            static_cast<size_t>(width) * 4,
-            rgba.size());
-    AImageDecoder_delete(decoder);
-
-    if (decode_result != ANDROID_IMAGE_DECODER_SUCCESS) {
-        LogPrint(ANDROID_LOG_WARN, "AImageDecoder_decodeImage failed: %d", decode_result);
-        return false;
-    }
-
-    return CopyRgbToWindow(rgba.data(), width, height, context->window);
-}
-
-bool RenderFrame(CameraContext* context, const uint8_t* data, size_t length) {
-    switch (context->pixel_format) {
-        case V4L2_PIX_FMT_MJPEG:
-            return RenderMjpegFrame(context, data, length);
-        case V4L2_PIX_FMT_YUYV:
-            return RenderYuyvFrame(context, data, length);
-        default:
-            LogPrint(ANDROID_LOG_WARN, "Unsupported pixel format: %08x", context->pixel_format);
-            return false;
-    }
+    return CopyRgbToWindow(context->rgbaBuffer.data(), width, height, context->window);
 }
 
 bool QueueAllBuffers(CameraContext* context) {
     for (size_t index = 0; index < context->buffers.size(); ++index) {
         v4l2_buffer buffer{};
-        buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buffer.type = context->bufferType;
         buffer.memory = V4L2_MEMORY_MMAP;
         buffer.index = static_cast<uint32_t>(index);
+        v4l2_plane planes[VIDEO_MAX_PLANES]{};
+        if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            buffer.length = context->planeCount;
+            buffer.m.planes = planes;
+        }
         if (IoctlRetry(context->fd, VIDIOC_QBUF, &buffer) == -1) {
             LogPrint(ANDROID_LOG_ERROR, "VIDIOC_QBUF failed for %s buffer %zu: %s",
-                    context->device_path.c_str(), index, strerror(errno));
+                    context->devicePath.c_str(), index, strerror(errno));
             return false;
         }
     }
@@ -327,69 +478,100 @@ bool QueueAllBuffers(CameraContext* context) {
 }
 
 void PreviewLoop(CameraContext* context) {
+    using Clock = std::chrono::steady_clock;
+    auto fpsWindowStart = Clock::now();
+    uint32_t fpsWindowFrames = 0;
+
     {
         std::lock_guard<std::mutex> lock(context->mutex);
         if (!QueueAllBuffers(context)) {
-            context->preview_started = false;
+            context->previewStarted = false;
             ReleaseWindow(context);
             return;
         }
 
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        enum v4l2_buf_type type = context->bufferType;
         if (IoctlRetry(context->fd, VIDIOC_STREAMON, &type) == -1) {
             LogPrint(ANDROID_LOG_ERROR, "VIDIOC_STREAMON failed for %s: %s",
-                    context->device_path.c_str(), strerror(errno));
-            context->preview_started = false;
+                    context->devicePath.c_str(), strerror(errno));
+            context->previewStarted = false;
             ReleaseWindow(context);
             return;
         }
-
         context->streaming = true;
     }
 
     LogPrint(ANDROID_LOG_INFO, "Preview loop started: %s %ux%u format=%08x",
-            context->device_path.c_str(), context->width, context->height, context->pixel_format);
+            context->devicePath.c_str(), context->width, context->height, context->pixelFormat);
 
-    while (!context->stop_requested.load()) {
-        pollfd poll_fd{};
-        poll_fd.fd = context->fd;
-        poll_fd.events = POLLIN;
+    while (!context->stopRequested.load()) {
+        pollfd pollFd{};
+        pollFd.fd = context->fd;
+        pollFd.events = POLLIN;
 
-        const int poll_result = poll(&poll_fd, 1, kPollTimeoutMs);
-        if (poll_result == 0) {
+        const int pollResult = poll(&pollFd, 1, kPollTimeoutMs);
+        if (pollResult == 0) {
             continue;
         }
-        if (poll_result < 0) {
+        if (pollResult < 0) {
             if (errno == EINTR) {
                 continue;
             }
             LogPrint(ANDROID_LOG_ERROR, "poll failed for %s: %s",
-                    context->device_path.c_str(), strerror(errno));
+                    context->devicePath.c_str(), strerror(errno));
             break;
         }
 
         v4l2_buffer buffer{};
-        buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buffer.type = context->bufferType;
         buffer.memory = V4L2_MEMORY_MMAP;
+        v4l2_plane planes[VIDEO_MAX_PLANES]{};
+        if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            buffer.length = context->planeCount;
+            buffer.m.planes = planes;
+        }
         if (IoctlRetry(context->fd, VIDIOC_DQBUF, &buffer) == -1) {
             if (errno == EAGAIN) {
                 continue;
             }
             LogPrint(ANDROID_LOG_ERROR, "VIDIOC_DQBUF failed for %s: %s",
-                    context->device_path.c_str(), strerror(errno));
+                    context->devicePath.c_str(), strerror(errno));
             break;
         }
 
         if (buffer.index < context->buffers.size()) {
             const auto& mapped = context->buffers[buffer.index];
-            RenderFrame(context,
-                    static_cast<const uint8_t*>(mapped.start),
-                    std::min(static_cast<size_t>(buffer.bytesused), mapped.length));
+            const size_t bytesUsed = context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
+                    ? static_cast<size_t>(buffer.m.planes[0].bytesused)
+                    : static_cast<size_t>(buffer.bytesused);
+            if (!RenderFrame(context, mapped, std::min(bytesUsed, mapped.length))) {
+                LogPrint(ANDROID_LOG_WARN,
+                        "RenderFrame failed: index=%u bytesUsed=%zu mapped=%zu format=%08x",
+                        buffer.index, bytesUsed, mapped.length, context->pixelFormat);
+            } else {
+                context->renderedFrameCount++;
+                fpsWindowFrames++;
+                const auto now = Clock::now();
+                const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - fpsWindowStart).count();
+                if (elapsedMs >= 1000) {
+                    const double fps = fpsWindowFrames * 1000.0 / static_cast<double>(elapsedMs);
+                    LogPrint(ANDROID_LOG_INFO,
+                            "Preview stats: %s %ux%u format=%08x fps=%.2f rendered=%u",
+                            context->devicePath.c_str(),
+                            context->width,
+                            context->height,
+                            context->pixelFormat,
+                            fps,
+                            context->renderedFrameCount);
+                    fpsWindowStart = now;
+                    fpsWindowFrames = 0;
+                }
+            }
         }
 
         if (IoctlRetry(context->fd, VIDIOC_QBUF, &buffer) == -1) {
             LogPrint(ANDROID_LOG_ERROR, "VIDIOC_QBUF recycle failed for %s: %s",
-                    context->device_path.c_str(), strerror(errno));
+                    context->devicePath.c_str(), strerror(errno));
             break;
         }
     }
@@ -397,108 +579,183 @@ void PreviewLoop(CameraContext* context) {
     std::lock_guard<std::mutex> lock(context->mutex);
     StopStreamingLocked(context);
     ReleaseWindow(context);
-    LogPrint(ANDROID_LOG_INFO, "Preview loop stopped: %s", context->device_path.c_str());
+    LogPrint(ANDROID_LOG_INFO, "Preview loop stopped: %s", context->devicePath.c_str());
 }
 
 bool ConfigureDevice(CameraContext* context) {
     v4l2_capability capability{};
     if (IoctlRetry(context->fd, VIDIOC_QUERYCAP, &capability) == -1) {
-        SetLastError(ErrnoMessage("VIDIOC_QUERYCAP failed for " + context->device_path));
+        SetLastError(ErrnoMessage("VIDIOC_QUERYCAP failed for " + context->devicePath));
         LogPrint(ANDROID_LOG_ERROR, "VIDIOC_QUERYCAP failed for %s: %s",
-                context->device_path.c_str(), strerror(errno));
+                context->devicePath.c_str(), strerror(errno));
         return false;
     }
 
-    if ((capability.capabilities & V4L2_CAP_VIDEO_CAPTURE) == 0) {
-        SetLastError("Device is not a V4L2 capture node: " + context->device_path);
-        LogPrint(ANDROID_LOG_ERROR, "Device is not a capture node: %s", context->device_path.c_str());
+    const uint32_t capabilityFlags = capability.device_caps != 0
+            ? capability.device_caps
+            : capability.capabilities;
+    if ((capabilityFlags & V4L2_CAP_VIDEO_CAPTURE) != 0) {
+        context->bufferType = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    } else if ((capabilityFlags & V4L2_CAP_VIDEO_CAPTURE_MPLANE) != 0) {
+        context->bufferType = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    } else {
+        SetLastError("Device is not a V4L2 capture node: " + context->devicePath);
+        LogPrint(ANDROID_LOG_ERROR, "Device is not a capture node: %s", context->devicePath.c_str());
         return false;
     }
 
-    if ((capability.capabilities & V4L2_CAP_STREAMING) == 0) {
-        SetLastError("Device does not support V4L2 streaming IO: " + context->device_path);
-        LogPrint(ANDROID_LOG_ERROR, "Device does not support streaming IO: %s", context->device_path.c_str());
+    if ((capabilityFlags & V4L2_CAP_STREAMING) == 0) {
+        SetLastError("Device does not support V4L2 streaming IO: " + context->devicePath);
+        LogPrint(ANDROID_LOG_ERROR, "Device does not support streaming IO: %s", context->devicePath.c_str());
         return false;
     }
 
     v4l2_format format{};
-    format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    format.fmt.pix.width = context->requested_width;
-    format.fmt.pix.height = context->requested_height;
-    format.fmt.pix.pixelformat = context->pixel_format;
-    format.fmt.pix.field = V4L2_FIELD_ANY;
-
-    if (IoctlRetry(context->fd, VIDIOC_S_FMT, &format) == -1) {
-        LogPrint(ANDROID_LOG_WARN, "VIDIOC_S_FMT failed for requested format %08x on %s: %s",
-                context->pixel_format, context->device_path.c_str(), strerror(errno));
-        format.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
-        if (IoctlRetry(context->fd, VIDIOC_S_FMT, &format) == -1) {
-            SetLastError(ErrnoMessage("VIDIOC_S_FMT failed for " + context->device_path));
-            LogPrint(ANDROID_LOG_ERROR, "VIDIOC_S_FMT fallback YUYV failed on %s: %s",
-                    context->device_path.c_str(), strerror(errno));
-            return false;
-        }
+    format.type = context->bufferType;
+    if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+        format.fmt.pix_mp.width = context->requestedWidth;
+        format.fmt.pix_mp.height = context->requestedHeight;
+        format.fmt.pix_mp.field = V4L2_FIELD_ANY;
+        format.fmt.pix_mp.num_planes = 1;
+    } else {
+        format.fmt.pix.width = context->requestedWidth;
+        format.fmt.pix.height = context->requestedHeight;
+        format.fmt.pix.field = V4L2_FIELD_ANY;
     }
 
-    context->width = format.fmt.pix.width;
-    context->height = format.fmt.pix.height;
-    context->pixel_format = format.fmt.pix.pixelformat;
+    const uint32_t preferredFormats[] = {
+            V4L2_PIX_FMT_NV12,
+            V4L2_PIX_FMT_NV21,
+            V4L2_PIX_FMT_YUYV,
+            V4L2_PIX_FMT_YVYU,
+            V4L2_PIX_FMT_UYVY,
+            V4L2_PIX_FMT_VYUY,
+            V4L2_PIX_FMT_NV16,
+            V4L2_PIX_FMT_NV61,
+    };
+
+    bool formatConfigured = false;
+    for (uint32_t candidate : preferredFormats) {
+        if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            format.fmt.pix_mp.pixelformat = candidate;
+        } else {
+            format.fmt.pix.pixelformat = candidate;
+        }
+        if (IoctlRetry(context->fd, VIDIOC_S_FMT, &format) == 0) {
+            formatConfigured = true;
+            break;
+        }
+        LogPrint(ANDROID_LOG_WARN, "VIDIOC_S_FMT failed for candidate format %08x on %s: %s",
+                candidate, context->devicePath.c_str(), strerror(errno));
+    }
+    if (!formatConfigured) {
+        SetLastError(ErrnoMessage("VIDIOC_S_FMT failed for " + context->devicePath));
+        LogPrint(ANDROID_LOG_ERROR, "No supported preview format on %s", context->devicePath.c_str());
+        return false;
+    }
+
+    if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+        context->width = format.fmt.pix_mp.width;
+        context->height = format.fmt.pix_mp.height;
+        context->pixelFormat = format.fmt.pix_mp.pixelformat;
+        context->bytesPerLine = format.fmt.pix_mp.plane_fmt[0].bytesperline;
+        context->sizeImage = format.fmt.pix_mp.plane_fmt[0].sizeimage;
+        context->planeCount = std::max<uint32_t>(format.fmt.pix_mp.num_planes, 1U);
+    } else {
+        context->width = format.fmt.pix.width;
+        context->height = format.fmt.pix.height;
+        context->pixelFormat = format.fmt.pix.pixelformat;
+        context->bytesPerLine = format.fmt.pix.bytesperline;
+        context->sizeImage = format.fmt.pix.sizeimage;
+        context->planeCount = 1;
+    }
 
     v4l2_streamparm streamparm{};
-    streamparm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    streamparm.type = context->bufferType;
     streamparm.parm.capture.timeperframe.numerator = 1;
-    streamparm.parm.capture.timeperframe.denominator = context->requested_fps;
+    streamparm.parm.capture.timeperframe.denominator = context->requestedFps;
     if (IoctlRetry(context->fd, VIDIOC_S_PARM, &streamparm) == -1) {
         LogPrint(ANDROID_LOG_WARN, "VIDIOC_S_PARM failed for %s: %s",
-                context->device_path.c_str(), strerror(errno));
+                context->devicePath.c_str(), strerror(errno));
     }
 
     v4l2_requestbuffers request{};
     request.count = kDefaultBufferCount;
-    request.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    request.type = context->bufferType;
     request.memory = V4L2_MEMORY_MMAP;
     if (IoctlRetry(context->fd, VIDIOC_REQBUFS, &request) == -1) {
-        SetLastError(ErrnoMessage("VIDIOC_REQBUFS failed for " + context->device_path));
+        SetLastError(ErrnoMessage("VIDIOC_REQBUFS failed for " + context->devicePath));
         LogPrint(ANDROID_LOG_ERROR, "VIDIOC_REQBUFS failed for %s: %s",
-                context->device_path.c_str(), strerror(errno));
+                context->devicePath.c_str(), strerror(errno));
         return false;
     }
     if (request.count < 2) {
-        SetLastError("VIDIOC_REQBUFS returned too few buffers for " + context->device_path);
+        SetLastError("VIDIOC_REQBUFS returned too few buffers for " + context->devicePath);
         LogPrint(ANDROID_LOG_ERROR, "Insufficient V4L2 buffers for %s: %u",
-                context->device_path.c_str(), request.count);
+                context->devicePath.c_str(), request.count);
         return false;
     }
 
     context->buffers.reserve(request.count);
     for (uint32_t index = 0; index < request.count; ++index) {
         v4l2_buffer buffer{};
-        buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buffer.type = context->bufferType;
         buffer.memory = V4L2_MEMORY_MMAP;
         buffer.index = index;
+        v4l2_plane planes[VIDEO_MAX_PLANES]{};
+        if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            buffer.length = context->planeCount;
+            buffer.m.planes = planes;
+        }
         if (IoctlRetry(context->fd, VIDIOC_QUERYBUF, &buffer) == -1) {
-            SetLastError(ErrnoMessage("VIDIOC_QUERYBUF failed for " + context->device_path));
+            SetLastError(ErrnoMessage("VIDIOC_QUERYBUF failed for " + context->devicePath));
             LogPrint(ANDROID_LOG_ERROR, "VIDIOC_QUERYBUF failed for %s buffer %u: %s",
-                    context->device_path.c_str(), index, strerror(errno));
+                    context->devicePath.c_str(), index, strerror(errno));
             return false;
         }
 
-        void* start = mmap(nullptr, buffer.length, PROT_READ | PROT_WRITE, MAP_SHARED,
-                context->fd, static_cast<off_t>(buffer.m.offset));
+        size_t mapLength = 0;
+        off_t mapOffset = 0;
+        if (context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            mapLength = buffer.m.planes[0].length;
+            mapOffset = static_cast<off_t>(buffer.m.planes[0].m.mem_offset);
+        } else {
+            mapLength = buffer.length;
+            mapOffset = static_cast<off_t>(buffer.m.offset);
+        }
+
+        v4l2_exportbuffer expbuf{};
+        expbuf.type = context->bufferType;
+        expbuf.index = index;
+        expbuf.plane = 0;
+        expbuf.flags = O_CLOEXEC;
+        if (IoctlRetry(context->fd, VIDIOC_EXPBUF, &expbuf) == -1) {
+            SetLastError(ErrnoMessage("VIDIOC_EXPBUF failed for " + context->devicePath));
+            LogPrint(ANDROID_LOG_ERROR, "VIDIOC_EXPBUF failed for %s buffer %u: %s",
+                    context->devicePath.c_str(), index, strerror(errno));
+            return false;
+        }
+
+        void* start = mmap(nullptr, mapLength, PROT_READ | PROT_WRITE, MAP_SHARED,
+                context->fd, mapOffset);
         if (start == MAP_FAILED) {
-            SetLastError(ErrnoMessage("mmap failed for " + context->device_path));
+            close(expbuf.fd);
+            SetLastError(ErrnoMessage("mmap failed for " + context->devicePath));
             LogPrint(ANDROID_LOG_ERROR, "mmap failed for %s buffer %u: %s",
-                    context->device_path.c_str(), index, strerror(errno));
+                    context->devicePath.c_str(), index, strerror(errno));
             return false;
         }
 
-        context->buffers.push_back({start, buffer.length});
+        context->buffers.push_back({start, mapLength, expbuf.fd});
     }
 
     context->configured = true;
-    LogPrint(ANDROID_LOG_INFO, "Configured %s: %ux%u format=%08x buffers=%zu",
-            context->device_path.c_str(), context->width, context->height,
-            context->pixel_format, context->buffers.size());
+    LogPrint(ANDROID_LOG_INFO,
+            "Configured %s: type=%u %ux%u format=%08x stride=%u sizeImage=%u planes=%u buffers=%zu",
+            context->devicePath.c_str(), static_cast<unsigned>(context->bufferType),
+            context->width, context->height, context->pixelFormat,
+            context->bytesPerLine, context->sizeImage,
+            context->planeCount, context->buffers.size());
     return true;
 }
 
@@ -506,13 +763,11 @@ void CleanupContext(CameraContext* context) {
     if (context == nullptr) {
         return;
     }
-
     {
         std::lock_guard<std::mutex> lock(context->mutex);
         StopStreamingLocked(context);
         ReleaseWindow(context);
     }
-
     UnmapBuffers(context);
     CloseDevice(context);
 }
@@ -529,16 +784,16 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeOpen(
         jint pixelFormat) {
     auto context = std::make_unique<CameraContext>();
     ClearLastError();
-    context->device_path = JStringToUtf8(env, devicePath);
-    context->requested_width = static_cast<uint32_t>(std::max(width, 1));
-    context->requested_height = static_cast<uint32_t>(std::max(height, 1));
-    context->pixel_format = ResolvePixelFormat(pixelFormat);
+    context->devicePath = JStringToUtf8(env, devicePath);
+    context->requestedWidth = static_cast<uint32_t>(std::max(width, 1));
+    context->requestedHeight = static_cast<uint32_t>(std::max(height, 1));
+    context->pixelFormat = ResolvePixelFormat(pixelFormat);
 
-    context->fd = open(context->device_path.c_str(), O_RDWR | O_NONBLOCK);
+    context->fd = open(context->devicePath.c_str(), O_RDWR | O_NONBLOCK);
     if (context->fd < 0) {
-        SetLastError(ErrnoMessage("open failed for " + context->device_path));
+        SetLastError(ErrnoMessage("open failed for " + context->devicePath));
         LogPrint(ANDROID_LOG_ERROR, "open failed for %s: %s",
-                context->device_path.c_str(), strerror(errno));
+                context->devicePath.c_str(), strerror(errno));
         return 0;
     }
 
@@ -571,27 +826,27 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeStartPreview(
         LogPrint(ANDROID_LOG_ERROR, "nativeStartPreview failed: device not configured");
         return -1;
     }
-    if (context->preview_started) {
+    if (context->previewStarted) {
         LogPrint(ANDROID_LOG_DEBUG, "nativeStartPreview skipped: preview already running for %s",
-                context->device_path.c_str());
+                context->devicePath.c_str());
         return 0;
     }
 
     ANativeWindow* window = ANativeWindow_fromSurface(env, surface);
     if (window == nullptr) {
         LogPrint(ANDROID_LOG_ERROR, "ANativeWindow_fromSurface returned null for %s",
-                context->device_path.c_str());
+                context->devicePath.c_str());
         return -1;
     }
 
-    if (context->preview_thread.joinable()) {
-        context->preview_thread.join();
+    if (context->previewThread.joinable()) {
+        context->previewThread.join();
     }
 
-    context->stop_requested.store(false);
+    context->stopRequested.store(false);
     context->window = window;
-    context->preview_started = true;
-    context->preview_thread = std::thread(PreviewLoop, context);
+    context->previewStarted = true;
+    context->previewThread = std::thread(PreviewLoop, context);
     return 0;
 }
 
@@ -605,9 +860,9 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeStopPreview(
         return;
     }
 
-    context->stop_requested.store(true);
-    if (context->preview_thread.joinable()) {
-        context->preview_thread.join();
+    context->stopRequested.store(true);
+    if (context->previewThread.joinable()) {
+        context->previewThread.join();
     }
 
     std::lock_guard<std::mutex> lock(context->mutex);
@@ -625,9 +880,9 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeClose(
         return;
     }
 
-    context->stop_requested.store(true);
-    if (context->preview_thread.joinable()) {
-        context->preview_thread.join();
+    context->stopRequested.store(true);
+    if (context->previewThread.joinable()) {
+        context->previewThread.join();
     }
 
     CleanupContext(context);
@@ -640,4 +895,85 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeGetLastError(
         jclass /* clazz */) {
     const std::string error = ReadLastError();
     return env->NewStringUTF(error.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
+        JNIEnv* env,
+        jclass /* clazz */,
+        jstring devicePath) {
+    const std::string path = JStringToUtf8(env, devicePath);
+    if (path.empty()) {
+        SetLastError("Motor serial device path is empty");
+        return JNI_FALSE;
+    }
+
+    std::lock_guard<std::mutex> lock(gMotorMutex);
+    if (gMotorFd >= 0) {
+        return JNI_TRUE;
+    }
+    ClearLastError();
+    gMotorFd = open(path.c_str(), O_RDWR | O_NOCTTY | O_CLOEXEC);
+    if (gMotorFd < 0) {
+        SetLastError(ErrnoMessage("open failed for " + path));
+        return JNI_FALSE;
+    }
+    if (!ConfigureMotorSerial(gMotorFd)) {
+        CloseMotorLocked();
+        return JNI_FALSE;
+    }
+    gMotorSequence = 0;
+    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 115200 8N1", path.c_str());
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorSend(
+        JNIEnv* /* env */,
+        jclass /* clazz */,
+        jint command,
+        jint level) {
+    // 0x0E 未定义；补光灯命令 0x0F/0x10 必须显式放行。
+    const bool validCommand = (command >= 0x01 && command <= 0x0d)
+            || command == 0x0f || command == 0x10;
+    if (!validCommand || level < 0 || level > 10) {
+        SetLastError("Invalid motor command or level");
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> lock(gMotorMutex);
+    return SendSerialCommandLocked(0x01, static_cast<uint8_t>(command), static_cast<uint8_t>(level))
+            ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeCounterReset(
+        JNIEnv* /* env */,
+        jclass /* clazz */) {
+    std::lock_guard<std::mutex> lock(gMotorMutex);
+    return SendSerialCommandLocked(0x02, 0x02, 0) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeCounterRead(
+        JNIEnv* /* env */,
+        jclass /* clazz */) {
+    std::lock_guard<std::mutex> lock(gMotorMutex);
+    const uint8_t sequence = gMotorSequence;
+    if (!SendSerialCommandLocked(0x02, 0x01, 0)) {
+        return std::numeric_limits<jlong>::min();
+    }
+    int32_t counterValue = 0;
+    if (!ReadCounterValueLocked(sequence, &counterValue)) {
+        return std::numeric_limits<jlong>::min();
+    }
+    return static_cast<jlong>(counterValue);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorClose(
+        JNIEnv* /* env */,
+        jclass /* clazz */) {
+    std::lock_guard<std::mutex> lock(gMotorMutex);
+    CloseMotorLocked();
+    LogPrint(ANDROID_LOG_INFO, "Motor serial closed");
 }

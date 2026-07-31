@@ -108,6 +108,63 @@ public final class V4l2CameraNative {
         nativeClose(handle);
     }
 
+    /** Opens the hardware RS485 UART used by the camera pan/tilt controller. */
+    public static boolean openMotorController(String devicePath) {
+        if (!AVAILABLE) {
+            Log.w(TAG, "openMotorController skipped: " + getAvailabilitySummary());
+            return false;
+        }
+        boolean opened = nativeMotorOpen(devicePath);
+        if (!opened) {
+            Log.e(TAG, "openMotorController failed: " + getLastNativeError());
+        }
+        return opened;
+    }
+
+    /** Sends one Motorcontrl_sensor command. The optional level is used by commands 0x05/0x06/0x10. */
+    public static boolean sendMotorCommand(int command, int level) {
+        if (!AVAILABLE) {
+            return false;
+        }
+        boolean sent = nativeMotorSend(command, level);
+        if (!sent) {
+            Log.e(TAG, "sendMotorCommand failed: command=" + command
+                    + ", error=" + getLastNativeError());
+        }
+        return sent;
+    }
+
+    public static void closeMotorController() {
+        if (AVAILABLE) {
+            nativeMotorClose();
+        }
+    }
+
+    /** Sends the DnkCounter (RS485 device id 0x02) reset command. */
+    public static boolean resetDistanceCounter() {
+        if (!AVAILABLE) {
+            return false;
+        }
+        boolean sent = nativeCounterReset();
+        if (!sent) {
+            Log.e(TAG, "resetDistanceCounter failed: " + getLastNativeError());
+        }
+        return sent;
+    }
+
+    /** Reads the signed DnkCounter value. Returns null when no valid RS485 response is received. */
+    public static Integer readDistanceCounter() {
+        if (!AVAILABLE) {
+            return null;
+        }
+        long value = nativeCounterRead();
+        if (value == Long.MIN_VALUE) {
+            Log.w(TAG, "readDistanceCounter failed: " + getLastNativeError());
+            return null;
+        }
+        return (int) value;
+    }
+
     private static native long nativeOpen(String devicePath, int width, int height, int pixelFormat);
 
     private static native int nativeStartPreview(long handle, Surface surface);
@@ -117,4 +174,14 @@ public final class V4l2CameraNative {
     private static native void nativeClose(long handle);
 
     private static native String nativeGetLastError();
+
+    private static native boolean nativeMotorOpen(String devicePath);
+
+    private static native boolean nativeMotorSend(int command, int level);
+
+    private static native void nativeMotorClose();
+
+    private static native boolean nativeCounterReset();
+
+    private static native long nativeCounterRead();
 }

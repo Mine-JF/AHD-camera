@@ -56,6 +56,10 @@ final class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.GalleryVi
         return selectedPosition;
     }
 
+    GalleryItem getItem(int position) {
+        return items.get(position);
+    }
+
     void setSelectedPosition(int position) {
         if (items.isEmpty()) {
             selectedPosition = RecyclerView.NO_POSITION;

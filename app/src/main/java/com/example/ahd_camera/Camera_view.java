@@ -26,6 +26,10 @@ import java.util.Arrays;
 public class Camera_view extends AppCompatActivity implements CameraStatusCallback {
 
     private static final String TAG = "Camera_view";
+    private static final long BACK_KEY_MIC_LONG_PRESS_MS = 2_000L;
+    private static final long STATUS_MESSAGE_DURATION_MS = 2_000L;
+    // DnkCounter protocol reports signed steps. Adjust this after wheel calibration if needed.
+    private static final float METERS_PER_COUNTER_STEP = 1.0f;
     public static final String ACTION_DISTANCE_UPDATE = "com.example.ahd_camera.action.DISTANCE_UPDATE";
     public static final String EXTRA_DISTANCE_METERS = "distance_meters";
 
@@ -39,6 +43,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private MicrophoneController microphoneController;
     private PhotoCaptureController photoCaptureController;
     private VideoRecorderController videoRecorderController;
+    private MotorController motorController;
+    private DistanceCounterController distanceCounterController;
     private String[] lastSelectedCameraIds = new String[0];
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private int cameraFlowGeneration = 0;
@@ -51,6 +57,9 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private View leftBlackOverlay;
     private View rightBlackOverlay;
     private int previewRotationDegrees = 0;
+    private boolean backKeyDown;
+    private boolean backKeyLongPressHandled;
+    private boolean lightEnabled;
     // 定时刷新顶部时间、电量、Wi‑Fi 和存储状态，避免每个状态都自己开轮询。
     private final Runnable hudRefreshRunnable = new Runnable() {
         @Override
@@ -68,6 +77,17 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
         refreshCameraFlow();
     };
+    private final Runnable backKeyLongPressRunnable = () -> {
+        if (!backKeyDown) {
+            return;
+        }
+        backKeyLongPressHandled = true;
+        boolean enableMicrophone = !microphoneController.isEnabled();
+        android.util.Log.i(TAG, "BACK long press: set microphone enabled=" + enableMicrophone);
+        microphoneController.setEnabled(enableMicrophone);
+        hudController.refresh();
+    };
+    private final Runnable hideStatusRunnable = this::hideStatus;
     private final BroadcastReceiver distanceReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(android.content.Context context, Intent intent) {
@@ -104,6 +124,12 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         hudController = new CameraHudController(this, microphoneController);
         photoCaptureController = new PhotoCaptureController(this);
         videoRecorderController = new VideoRecorderController(this);
+        motorController = new MotorController();
+        distanceCounterController = new DistanceCounterController(motorController, counterValue -> {
+            float distanceMeters = counterValue * METERS_PER_COUNTER_STEP;
+            hudController.setDistanceMeters(distanceMeters);
+            hudController.refresh();
+        });
         cameraController = createCameraController();
 
         cameraContainer = findViewById(R.id.camera_container);
@@ -151,6 +177,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         }
         mainHandler.removeCallbacks(hudRefreshRunnable);
         mainHandler.post(hudRefreshRunnable);
+        distanceCounterController.start();
         cameraController.startBackgroundThread();
         ensureCameraPermissionAndStart();
         cameraController.startAvailabilityMonitor();
@@ -163,12 +190,18 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         cameraFlowGeneration++;
         mainHandler.removeCallbacks(refreshCameraRunnable);
         mainHandler.removeCallbacks(hudRefreshRunnable);
+        mainHandler.removeCallbacks(backKeyLongPressRunnable);
+        mainHandler.removeCallbacks(hideStatusRunnable);
+        distanceCounterController.stop();
+        backKeyDown = false;
+        backKeyLongPressHandled = false;
         if (distanceReceiverRegistered) {
             unregisterReceiver(distanceReceiver);
             distanceReceiverRegistered = false;
             android.util.Log.d(TAG, "onPause: distanceReceiver unregistered");
         }
         cameraController.stopAvailabilityMonitor();
+        motorController.stopAndClose();
         cameraController.closeAllCameras();
         cameraController.stopBackgroundThread();
         if (videoRecorderController.isRecording()) {
@@ -296,15 +329,18 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         android.util.Log.w(TAG, "showStatus: " + message);
         currentStatusMessage = message;
         runOnUiThread(() -> {
+            mainHandler.removeCallbacks(hideStatusRunnable);
             statusText.setText(message);
             statusText.bringToFront();
             statusText.setVisibility(View.VISIBLE);
+            mainHandler.postDelayed(hideStatusRunnable, STATUS_MESSAGE_DURATION_MS);
         });
     }
 
     // 隐藏中央状态文字，保持纯预览或纯黑屏显示。
     private void hideStatus() {
         android.util.Log.d(TAG, "hideStatus");
+        mainHandler.removeCallbacks(hideStatusRunnable);
         currentStatusMessage = "";
         runOnUiThread(() -> statusText.setVisibility(View.GONE));
     }
@@ -315,47 +351,164 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         startActivity(new Intent(this, com.example.Settings.Settings.class));
     }
 
+    /**
+     * 相机主页的板载按键总入口。
+     * 外接键盘事件会先被过滤；随后依次处理计米清零、补光灯、VCM 对焦、云台方向和页面快捷键。
+     */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: ESC pressed");
-            openSettings();
+        if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
         }
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && (event.getKeyCode() == KeyEvent.KEYCODE_M
-                || event.getKeyCode() == KeyEvent.KEYCODE_F1)) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: toggle microphone");
-            microphoneController.toggle();
-            hudController.refresh();
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            return handleBackKey(event);
+        }
+        if (event.getScanCode() == 0x163 || event.getKeyCode() == KeyEvent.KEYCODE_CLEAR) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                boolean resetSent = motorController.resetDistanceCounter();
+                android.util.Log.i(TAG, "distance clear key: sent=" + resetSent
+                        + ", scanCode=" + event.getScanCode());
+                if (resetSent) {
+                    hudController.setDistanceMeters(0.0f);
+                    hudController.refresh();
+                    showStatus("计米已清零");
+                }
+            }
             return true;
         }
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && event.getKeyCode() == KeyEvent.KEYCODE_P) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: open gallery");
-            startActivity(new Intent(this, GalleryActivity.class));
+        if (event.getKeyCode() == KeyEvent.KEYCODE_T) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                // T 为开关键：每次有效按下在“关闭”和“10档最亮”之间切换。
+                boolean nextEnabled = !lightEnabled;
+                boolean sent = motorController.setLightEnabled(nextEnabled);
+                android.util.Log.i(TAG, "light key: enabled=" + nextEnabled + ", sent=" + sent);
+                if (sent) {
+                    lightEnabled = nextEnabled;
+                    showStatus(nextEnabled ? "补光灯：最亮" : "补光灯：关闭");
+                }
+            }
             return true;
         }
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && event.getKeyCode() == KeyEvent.KEYCODE_O) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: capture photo");
-            capturePhoto();
+        if (handleFocusKey(event)) {
             return true;
         }
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && event.getKeyCode() == KeyEvent.KEYCODE_L) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: toggle recording");
-            toggleVideoRecording();
+        int moveCommand = commandForDirectionKey(event.getKeyCode());
+        if (moveCommand != 0) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                android.util.Log.i(TAG, "motor key down: command=" + moveCommand);
+                motorController.move(moveCommand);
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                android.util.Log.i(TAG, "motor key up: command=" + moveCommand);
+                motorController.stopForMove(moveCommand);
+            }
             return true;
         }
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && event.getKeyCode() == KeyEvent.KEYCODE_I) {
-            android.util.Log.d(TAG, "dispatchKeyEvent: rotate preview");
-            rotatePreviewClockwise();
-            return true;
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_MENU:
+                    android.util.Log.d(TAG, "dispatchKeyEvent: open settings");
+                    openSettings();
+                    return true;
+                case KeyEvent.KEYCODE_G:
+                    android.util.Log.d(TAG, "dispatchKeyEvent: open gallery");
+                    startActivity(new Intent(this, GalleryActivity.class));
+                    return true;
+                case KeyEvent.KEYCODE_V:
+                case KeyEvent.KEYCODE_ENTER:
+                    android.util.Log.d(TAG, "dispatchKeyEvent: capture photo");
+                    capturePhoto();
+                    return true;
+                case KeyEvent.KEYCODE_Y:
+                    android.util.Log.d(TAG, "dispatchKeyEvent: toggle recording");
+                    toggleVideoRecording();
+                    return true;
+                case KeyEvent.KEYCODE_H:
+                    android.util.Log.d(TAG, "dispatchKeyEvent: rotate preview");
+                    rotatePreviewClockwise();
+                    return true;
+                default:
+                    break;
+            }
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    /**
+     * GPIO4_B3~B6 编码器按键：W/S 调整电机3焦距，D/A 调整电机3驱动档位。
+     * W/S 松开时不发送 0x0A，确保 MCU 保持 VCM 电流，从而维持当前对焦状态。
+     */
+    private boolean handleFocusKey(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        if (keyCode == KeyEvent.KEYCODE_W || keyCode == KeyEvent.KEYCODE_S) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                int command = keyCode == KeyEvent.KEYCODE_W
+                        ? MotorController.COMMAND_FOCUS_UP : MotorController.COMMAND_FOCUS_DOWN;
+                android.util.Log.i(TAG, "focus key down: command=" + command);
+                motorController.moveFocus(command);
+            } else if (event.getAction() == KeyEvent.ACTION_UP) {
+                // The MCU keeps the VCM energized after CMD_FOCUS_UP/DOWN. Do not send
+                // CMD_STOP_FOCUS here: Coast mode releases coil current and loses focus.
+                android.util.Log.i(TAG, "focus key up: retain VCM holding current");
+            }
+            return true;
+        }
+
+        if (keyCode == KeyEvent.KEYCODE_D || keyCode == KeyEvent.KEYCODE_A) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                int command = keyCode == KeyEvent.KEYCODE_D
+                        ? MotorController.COMMAND_FOCUS_SPEED_UP
+                        : MotorController.COMMAND_FOCUS_SPEED_DOWN;
+                android.util.Log.i(TAG, "focus speed key: command=" + command);
+                motorController.adjustFocusSpeed(command);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private boolean handleBackKey(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (event.getRepeatCount() == 0) {
+                backKeyDown = true;
+                backKeyLongPressHandled = false;
+                mainHandler.postDelayed(backKeyLongPressRunnable, BACK_KEY_MIC_LONG_PRESS_MS);
+                android.util.Log.d(TAG, "BACK down: wait for short/long press");
+            }
+            return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            mainHandler.removeCallbacks(backKeyLongPressRunnable);
+            boolean longPressHandled = backKeyLongPressHandled;
+            backKeyDown = false;
+            backKeyLongPressHandled = false;
+            if (!longPressHandled) {
+                // Camera_view is the launcher/home page. Do not let a hardware BACK key
+                // finish it and expose the Android launcher; only its long-press action is used here.
+                android.util.Log.d(TAG, "BACK short press: ignored on preview home page");
+            } else {
+                android.util.Log.d(TAG, "BACK released after long press: keep microphone state");
+                hudController.refresh();
+            }
+            return true;
+        }
+        return true;
+    }
+
+    private int commandForDirectionKey(int keyCode) {
+        switch (keyCode) {
+            // 电机使用 GPIO4_A5/A7/A6/A4 对应的 I/K/J/L 键。
+            // DPAD 键保留给设置、图库等页面进行界面导航。
+            case KeyEvent.KEYCODE_I:
+                return MotorController.COMMAND_UP;
+            case KeyEvent.KEYCODE_K:
+                return MotorController.COMMAND_DOWN;
+            case KeyEvent.KEYCODE_J:
+                return MotorController.COMMAND_LEFT;
+            case KeyEvent.KEYCODE_L:
+                return MotorController.COMMAND_RIGHT;
+            default:
+                return 0;
+        }
     }
 
     // 相机控制层回调到页面层的统一错误入口。

@@ -65,12 +65,25 @@ public class MediaPreviewActivity extends AppCompatActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
-                || event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
-            Log.d(TAG, "dispatchKeyEvent: close preview");
-            finish();
+        if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_ESCAPE:
+                case KeyEvent.KEYCODE_BACK:
+                case KeyEvent.KEYCODE_MENU:
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_MEDIA_PLAY:
+                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                    Log.d(TAG, "dispatchKeyEvent: close preview");
+                    finish();
+                    return true;
+                default:
+                    break;
+            }
         }
         return super.dispatchKeyEvent(event);
     }

@@ -31,6 +31,7 @@ import java.util.Locale;
 public class GalleryActivity extends AppCompatActivity {
 
     private static final String TAG = "GalleryActivity";
+    private static final int GRID_SPAN_COUNT = 3;
 
     private RecyclerView recyclerView;
     private TextView emptyView;
@@ -53,7 +54,7 @@ public class GalleryActivity extends AppCompatActivity {
         emptyView = findViewById(R.id.gallery_empty_text);
         adapter = new GalleryAdapter(getContentResolver(), this::openPreview);
 
-        recyclerView.setLayoutManager(new GridLayoutManager(this, 3));
+        recyclerView.setLayoutManager(new GridLayoutManager(this, GRID_SPAN_COUNT));
         recyclerView.setAdapter(adapter);
         Log.d(TAG, "onCreate: recycler initialized");
     }
@@ -226,14 +227,67 @@ public class GalleryActivity extends AppCompatActivity {
         startActivity(intent);
     }
 
+    private void moveSelection(int delta) {
+        int current = adapter.getSelectedPosition();
+        if (current == RecyclerView.NO_POSITION) {
+            Log.w(TAG, "moveSelection: no selected item");
+            return;
+        }
+        int next = Math.max(0, Math.min(current + delta, adapter.getItemCount() - 1));
+        if (next == current) {
+            Log.d(TAG, "moveSelection: keep current=" + current);
+            return;
+        }
+        adapter.setSelectedPosition(next);
+        focusGalleryItem(next);
+    }
+
+    private void openSelectedItem() {
+        int position = adapter.getSelectedPosition();
+        if (position == RecyclerView.NO_POSITION || position >= adapter.getItemCount()) {
+            Log.w(TAG, "openSelectedItem: invalid position=" + position);
+            return;
+        }
+        GalleryItem item = adapter.getItem(position);
+        openPreview(item);
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN
-                && (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
-                || event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
-            Log.d(TAG, "dispatchKeyEvent: exit gallery");
-            finish();
+        if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
+        }
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            switch (event.getKeyCode()) {
+                case KeyEvent.KEYCODE_ESCAPE:
+                case KeyEvent.KEYCODE_BACK:
+                case KeyEvent.KEYCODE_MENU:
+                    Log.d(TAG, "dispatchKeyEvent: exit gallery");
+                    finish();
+                    return true;
+                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_NUMPAD_ENTER:
+                case KeyEvent.KEYCODE_DPAD_CENTER:
+                case KeyEvent.KEYCODE_MEDIA_PLAY:
+                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                    Log.d(TAG, "dispatchKeyEvent: open selected item");
+                    openSelectedItem();
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    moveSelection(-1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    moveSelection(1);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    moveSelection(-GRID_SPAN_COUNT);
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    moveSelection(GRID_SPAN_COUNT);
+                    return true;
+                default:
+                    break;
+            }
         }
         return super.dispatchKeyEvent(event);
     }

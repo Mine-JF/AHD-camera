@@ -18,6 +18,7 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.ahd_camera.R;
+import com.example.ahd_camera.HardwareKeySourceFilter;
 import com.example.ahd_camera.Utils;
 
 import java.util.Arrays;
@@ -270,8 +271,15 @@ public class Settings extends AppCompatActivity {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        // 只处理按下事件，避免按键抬起阶段重复触发。
+        if (!HardwareKeySourceFilter.isBoardKey(event)) {
+            return true;
+        }
+        // 只处理按下事件，避免按键抬起阶段重复触发。BACK 的抬起事件也必须消费，
+        // 否则系统会把已处理的两级返回当作默认返回再次执行。
         if (event.getAction() != KeyEvent.ACTION_DOWN) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                return true;
+            }
             return super.dispatchKeyEvent(event);
         }
 
@@ -282,8 +290,9 @@ public class Settings extends AppCompatActivity {
 
         // 当前焦点在右侧内容区时，保留左右、上下的局部导航逻辑。
         if (focusIsRightPane) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
-                Log.d(TAG, "dispatchKeyEvent: escape from right pane");
+            if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
+                    || event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                Log.d(TAG, "dispatchKeyEvent: back from right pane to left menu");
                 rvLeftMenu.requestFocus();
                 rvLeftMenu.post(() -> focusLeftMenuItem(menuAdapter != null ? menuAdapter.getSelectedPosition() : 0));
                 return true;
@@ -343,7 +352,8 @@ public class Settings extends AppCompatActivity {
         if (focusIsLeftMenu || currentFocus == null) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
-                    Log.d(TAG, "dispatchKeyEvent: escape from left menu, finish settings");
+                case KeyEvent.KEYCODE_BACK:
+                    Log.d(TAG, "dispatchKeyEvent: back from left menu, finish settings");
                     finish();
                     return true;
                 case KeyEvent.KEYCODE_DPAD_UP:
