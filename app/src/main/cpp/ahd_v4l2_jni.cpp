@@ -227,8 +227,8 @@ bool ConfigureMotorSerial(int fd) {
         return false;
     }
     cfmakeraw(&settings);
-    if (cfsetispeed(&settings, B115200) == -1 || cfsetospeed(&settings, B115200) == -1) {
-        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 115200 baud"));
+    if (cfsetispeed(&settings, B9600) == -1 || cfsetospeed(&settings, B9600) == -1) {
+        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 9600 baud"));
         return false;
     }
     settings.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
@@ -923,7 +923,7 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
         return JNI_FALSE;
     }
     gMotorSequence = 0;
-    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 115200 8N1", path.c_str());
+    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 9600 8N1", path.c_str());
     return JNI_TRUE;
 }
 
