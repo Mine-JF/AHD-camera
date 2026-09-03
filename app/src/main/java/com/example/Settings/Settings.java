@@ -274,10 +274,10 @@ public class Settings extends AppCompatActivity {
         if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
         }
-        // 只处理按下事件，避免按键抬起阶段重复触发。BACK 的抬起事件也必须消费，
+        // 只处理按下事件，避免按键抬起阶段重复触发。返回键的抬起事件也必须消费，
         // 否则系统会把已处理的两级返回当作默认返回再次执行。
         if (event.getAction() != KeyEvent.ACTION_DOWN) {
-            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_Z) {
                 return true;
             }
             return super.dispatchKeyEvent(event);
@@ -291,7 +291,7 @@ public class Settings extends AppCompatActivity {
         // 当前焦点在右侧内容区时，保留左右、上下的局部导航逻辑。
         if (focusIsRightPane) {
             if (event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE
-                    || event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+                    || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_Z) {
                 Log.d(TAG, "dispatchKeyEvent: back from right pane to left menu");
                 rvLeftMenu.requestFocus();
                 rvLeftMenu.post(() -> focusLeftMenuItem(menuAdapter != null ? menuAdapter.getSelectedPosition() : 0));
@@ -299,10 +299,10 @@ public class Settings extends AppCompatActivity {
             }
 
             if (currentFocus instanceof SeekBar) {
-                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT
-                        || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_12
+                        || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_13) {
                     SeekBar seekBar = (SeekBar) currentFocus;
-                    int delta = event.getKeyCode() == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1;
+                    int delta = event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_12 ? -1 : 1;
                     int nextProgress = Math.max(0, Math.min(seekBar.getProgress() + delta, seekBar.getMax()));
                     if (nextProgress != seekBar.getProgress()) {
                         Log.d(TAG, "dispatchKeyEvent: adjust seekbar progress=" + nextProgress);
@@ -310,8 +310,8 @@ public class Settings extends AppCompatActivity {
                     }
                     return true;
                 }
-                if (event.getKeyCode() == KeyEvent.KEYCODE_DPAD_UP
-                        || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_DOWN) {
+                if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_10
+                        || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_11) {
                     return true;
                 }
             }
@@ -319,16 +319,16 @@ public class Settings extends AppCompatActivity {
             if (currentFocus != null) {
                 int direction;
                 switch (event.getKeyCode()) {
-                    case KeyEvent.KEYCODE_DPAD_LEFT:
+                    case KeyEvent.KEYCODE_BUTTON_12:
                         direction = View.FOCUS_LEFT;
                         break;
-                    case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    case KeyEvent.KEYCODE_BUTTON_13:
                         direction = View.FOCUS_RIGHT;
                         break;
-                    case KeyEvent.KEYCODE_DPAD_UP:
+                    case KeyEvent.KEYCODE_BUTTON_10:
                         direction = View.FOCUS_UP;
                         break;
-                    case KeyEvent.KEYCODE_DPAD_DOWN:
+                    case KeyEvent.KEYCODE_BUTTON_11:
                         direction = View.FOCUS_DOWN;
                         break;
                     default:
@@ -342,6 +342,8 @@ public class Settings extends AppCompatActivity {
                         Log.w(TAG, "dispatchKeyEvent: blocked focus jump back to menu");
                         return true;
                     }
+                    nextFocus.requestFocus();
+                    return true;
                 }
             }
 
@@ -352,23 +354,22 @@ public class Settings extends AppCompatActivity {
         if (focusIsLeftMenu || currentFocus == null) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
-                case KeyEvent.KEYCODE_BACK:
+                case KeyEvent.KEYCODE_BUTTON_Z:
                     Log.d(TAG, "dispatchKeyEvent: back from left menu, finish settings");
                     finish();
                     return true;
-                case KeyEvent.KEYCODE_DPAD_UP:
+                case KeyEvent.KEYCODE_BUTTON_10:
                     Log.d(TAG, "dispatchKeyEvent: move menu up");
                     moveMenuSelection(-1);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_DOWN:
+                case KeyEvent.KEYCODE_BUTTON_11:
                     Log.d(TAG, "dispatchKeyEvent: move menu down");
                     moveMenuSelection(1);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                case KeyEvent.KEYCODE_BUTTON_13:
                     Log.d(TAG, "dispatchKeyEvent: enter right pane");
                     return true;
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_BUTTON_7:
                     Log.d(TAG, "dispatchKeyEvent: enter right content");
                     enterRightContent();
                     return true;

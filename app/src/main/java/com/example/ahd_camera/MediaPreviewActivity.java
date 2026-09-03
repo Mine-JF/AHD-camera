@@ -71,13 +71,10 @@ public class MediaPreviewActivity extends AppCompatActivity {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
-                case KeyEvent.KEYCODE_BACK:
-                case KeyEvent.KEYCODE_MENU:
-                case KeyEvent.KEYCODE_ENTER:
-                case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_MEDIA_PLAY:
-                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                case KeyEvent.KEYCODE_BUTTON_Z:
+                case KeyEvent.KEYCODE_BUTTON_2:
+                case KeyEvent.KEYCODE_BUTTON_3:
+                case KeyEvent.KEYCODE_BUTTON_7:
                     Log.d(TAG, "dispatchKeyEvent: close preview");
                     finish();
                     return true;

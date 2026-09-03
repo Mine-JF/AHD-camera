@@ -16,10 +16,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class V4l2CameraController implements CameraPreviewController {
 
@@ -28,19 +28,17 @@ public class V4l2CameraController implements CameraPreviewController {
     private static final int MAX_PREVIEW_WIDTH = 1280;
     private static final int MAX_PREVIEW_HEIGHT = 720;
     private static final long TOPOLOGY_POLL_MS = 1000L;
+    private static final long UNAVAILABLE_NODE_RETRY_MS = 5_000L;
     private static final String SYSFS_VIDEO4LINUX_DIR = "/sys/class/video4linux";
-    private static final String[] PREFERRED_USB_NAME_KEYWORDS = {
-            "rlzg",
-            "rsict",
-            "uvc",
-            "camera"
-    };
     private static final String[] EXCLUDED_NODE_NAME_KEYWORDS = {
             "luma",
             "meta",
             "embedded",
             "stat"
     };
+    private static final String PRIMARY_PLATFORM_KEYWORD = "rkcif";
+    private static final String SECONDARY_PLATFORM_KEYWORD = "rkisp";
+    private static final String MAIN_PATH_KEYWORD = "mainpath";
 
     private final CameraStatusCallback statusCallback;
     private final Handler mainHandler = new Handler(android.os.Looper.getMainLooper());
@@ -59,6 +57,9 @@ public class V4l2CameraController implements CameraPreviewController {
     private boolean availabilityMonitorRegistered;
     private String[] lastTopology = new String[0];
     private boolean nativeUnavailableLogged;
+    // 某些板载摄像头拔出后 /dev/videoX 仍存在。失败节点短暂排除，先恢复
+    // 单摄全屏；冷却后自动重试，从而兼顾无信号检测和重新插入恢复。
+    private final Map<String, Long> unavailableNodesUntil = new ConcurrentHashMap<>();
     private final PreviewSlot leftSlot = new PreviewSlot("left");
     private final PreviewSlot rightSlot = new PreviewSlot("right");
 
@@ -152,7 +153,6 @@ public class V4l2CameraController implements CameraPreviewController {
 
         Arrays.sort(videoEntries, Comparator.comparing(File::getName));
 
-        Map<String, List<VideoNodeInfo>> groupedUsbNodes = new LinkedHashMap<>();
         List<VideoNodeInfo> platformCandidates = new ArrayList<>();
         for (File entry : videoEntries) {
             VideoNodeInfo info = readVideoNodeInfo(entry);
@@ -160,83 +160,99 @@ public class V4l2CameraController implements CameraPreviewController {
                 continue;
             }
             Log.d(TAG, "selectCameraNodes inspect: " + info);
+            if (isTemporarilyUnavailable(info.devPath)) {
+                Log.d(TAG, "selectCameraNodes skip temporarily unavailable node: " + info.devPath);
+                continue;
+            }
             if (!looksLikeCaptureNode(info.displayName)) {
                 Log.d(TAG, "selectCameraNodes skip non-preview node: " + info.devPath
                         + ", name=" + info.displayName);
                 continue;
             }
-            if (!info.isUsb) {
-                platformCandidates.add(info);
-                continue;
-            }
-            if (!looksLikeUsbCamera(info.displayName)) {
-                Log.d(TAG, "selectCameraNodes skip non-camera usb node: " + info.devPath
+            // 本机只使用板载 AHD 链路。USB 摄像头、采集卡等 video 节点不参与
+            // 拓扑判断，因此 USB 设备插拔不会导致正在显示的 AHD 画面重建。
+            if (info.isUsb) {
+                Log.d(TAG, "selectCameraNodes ignore usb video node: " + info.devPath
                         + ", name=" + info.displayName);
                 continue;
             }
-            groupedUsbNodes.computeIfAbsent(info.groupKey, ignored -> new ArrayList<>()).add(info);
+            platformCandidates.add(info);
         }
 
-        if (!groupedUsbNodes.isEmpty()) {
-            return chooseOneNodePerGroup(groupedUsbNodes, "usb");
-        }
-        Log.w(TAG, "selectCameraNodes: no matching usb camera groups, fallback to platform nodes");
+        List<String> selected = new ArrayList<>();
         if (!platformCandidates.isEmpty()) {
-            platformCandidates.sort(Comparator
-                    .comparingInt((VideoNodeInfo info) -> info.index == Integer.MAX_VALUE ? Integer.MAX_VALUE : info.index)
-                    .thenComparingInt(info -> info.videoNumber));
-            List<String> selected = new ArrayList<>();
-            VideoNodeInfo primaryNode = platformCandidates.get(0);
-            selected.add(primaryNode.devPath);
-            Log.i(TAG, "selectCameraNodes fallback choose primary platform node: " + selected
-                    + ", node=" + primaryNode + ", allCandidates=" + platformCandidates);
+            // 不依赖 /dev/videoX 的编号：主画面固定跟随 rkcif 链路，第二画面优先
+            // 使用 rkisp 的 mainpath。内核重新枚举导致节点号变化时仍能选中同一角色。
+            VideoNodeInfo primaryNode = choosePlatformNode(
+                    platformCandidates, PRIMARY_PLATFORM_KEYWORD, false);
+            VideoNodeInfo secondaryNode = choosePlatformNode(
+                    platformCandidates, SECONDARY_PLATFORM_KEYWORD, true);
+
+            appendDistinctNode(selected, primaryNode, "primary-rkcif");
+            appendDistinctNode(selected, secondaryNode, "secondary-rkisp-mainpath");
+
+            // 对名称不标准的板级驱动保留单路兜底，但不能把同一 pipeline 下的
+            // video1/video2 等节点误认为多台摄像头。
+            if (selected.isEmpty()) {
+                platformCandidates.sort(videoNodeOrder(false));
+                appendDistinctNode(selected, platformCandidates.get(0), "platform-fallback");
+            }
+        }
+
+        if (!selected.isEmpty()) {
+            Log.i(TAG, "selectCameraNodes choose=" + selected
+                    + ", platformCandidates=" + platformCandidates);
             return selected;
         }
 
-        Log.w(TAG, "selectCameraNodes: no platform candidates, fallback to raw /dev/video* scan");
-        return fallbackSelectVideoNodes();
+        Log.w(TAG, "selectCameraNodes: no matching AHD platform capture nodes");
+        return Collections.emptyList();
     }
 
-    private List<String> chooseOneNodePerGroup(Map<String, List<VideoNodeInfo>> groupedNodes, String sourceLabel) {
-        List<String> selected = new ArrayList<>();
-        for (Map.Entry<String, List<VideoNodeInfo>> groupEntry : groupedNodes.entrySet()) {
-            List<VideoNodeInfo> groupNodes = groupEntry.getValue();
-            groupNodes.sort(Comparator
-                    .comparingInt((VideoNodeInfo info) -> info.index == Integer.MAX_VALUE ? Integer.MAX_VALUE : info.index)
-                    .thenComparingInt(info -> info.videoNumber));
-            VideoNodeInfo chosen = groupNodes.get(0);
-            selected.add(chosen.devPath);
-            Log.i(TAG, "chooseOneNodePerGroup(" + sourceLabel + ") choose: group=" + groupEntry.getKey()
-                    + ", chosen=" + chosen.devPath
-                    + ", name=" + chosen.displayName
-                    + ", index=" + chosen.index
-                    + ", all=" + groupNodes);
+    private VideoNodeInfo choosePlatformNode(
+            List<VideoNodeInfo> candidates,
+            String platformKeyword,
+            boolean preferMainPath
+    ) {
+        List<VideoNodeInfo> matches = new ArrayList<>();
+        for (VideoNodeInfo info : candidates) {
+            String identity = (info.displayName + " " + info.deviceRealPath + " " + info.groupKey)
+                    .toLowerCase(Locale.US);
+            if (identity.contains(platformKeyword)) {
+                matches.add(info);
+            }
         }
-
-        return selected;
+        if (matches.isEmpty()) {
+            return null;
+        }
+        matches.sort(videoNodeOrder(preferMainPath));
+        VideoNodeInfo chosen = matches.get(0);
+        Log.i(TAG, "choosePlatformNode: keyword=" + platformKeyword
+                + ", preferMainPath=" + preferMainPath
+                + ", chosen=" + chosen
+                + ", matches=" + matches);
+        return chosen;
     }
 
-    private List<String> fallbackSelectVideoNodes() {
-        List<String> selected = new ArrayList<>();
-        File devDir = new File("/dev");
-        File[] entries = devDir.listFiles();
-        if (entries == null) {
-            Log.w(TAG, "fallbackSelectVideoNodes: /dev listFiles returned null");
-            return selected;
-        }
+    private Comparator<VideoNodeInfo> videoNodeOrder(boolean preferMainPath) {
+        return Comparator
+                .comparingInt((VideoNodeInfo info) -> preferMainPath && isMainPathNode(info) ? 0 : 1)
+                .thenComparingInt(info -> info.index == Integer.MAX_VALUE
+                        ? Integer.MAX_VALUE : info.index)
+                .thenComparingInt(info -> info.videoNumber);
+    }
 
-        Arrays.sort(entries, Comparator.comparing(File::getName));
-        for (File entry : entries) {
-            String name = entry.getName();
-            if (!name.startsWith("video")) {
-                continue;
-            }
-            if (entry.exists()) {
-                selected.add(entry.getAbsolutePath());
-            }
+    private boolean isMainPathNode(VideoNodeInfo info) {
+        return info.displayName != null
+                && info.displayName.toLowerCase(Locale.US).contains(MAIN_PATH_KEYWORD);
+    }
+
+    private void appendDistinctNode(List<String> selected, VideoNodeInfo node, String role) {
+        if (node == null || selected.contains(node.devPath)) {
+            return;
         }
-        Log.w(TAG, "fallbackSelectVideoNodes: selected all video nodes=" + selected);
-        return selected;
+        selected.add(node.devPath);
+        Log.i(TAG, "appendDistinctNode: role=" + role + ", node=" + node);
     }
 
     private VideoNodeInfo readVideoNodeInfo(File sysfsVideoDir) {
@@ -269,19 +285,6 @@ public class V4l2CameraController implements CameraPreviewController {
                 groupKey,
                 isUsb
         );
-    }
-
-    private boolean looksLikeUsbCamera(String displayName) {
-        if (displayName == null || displayName.trim().isEmpty()) {
-            return true;
-        }
-        String normalized = displayName.toLowerCase(Locale.US);
-        for (String keyword : PREFERRED_USB_NAME_KEYWORDS) {
-            if (normalized.contains(keyword)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private boolean looksLikeCaptureNode(String displayName) {
@@ -378,10 +381,10 @@ public class V4l2CameraController implements CameraPreviewController {
     @Override
     public int getOpenCameraCount() {
         int count = 0;
-        if (leftSlot.nativeHandle != 0L) {
+        if (V4l2CameraNative.isPreviewActive(leftSlot.nativeHandle)) {
             count++;
         }
-        if (rightSlot.nativeHandle != 0L) {
+        if (V4l2CameraNative.isPreviewActive(rightSlot.nativeHandle)) {
             count++;
         }
         Log.d(TAG, "getOpenCameraCount: " + count);
@@ -465,8 +468,10 @@ public class V4l2CameraController implements CameraPreviewController {
                     + ", devicePath=" + requestedDevicePath
                     + ", viewSize=" + slot.previewView.getWidth() + "x" + slot.previewView.getHeight());
             texture.setDefaultBufferSize(slot.previewView.getWidth(), slot.previewView.getHeight());
-            int requestWidth = clampPreviewSize(slot.previewView.getWidth(), MAX_PREVIEW_WIDTH);
-            int requestHeight = clampPreviewSize(slot.previewView.getHeight(), MAX_PREVIEW_HEIGHT);
+            // 分屏只改变显示区域，不改变每路摄像头的取流规格，避免主路从
+            // 1280x720 被控件半宽误改为 960x720。
+            int requestWidth = MAX_PREVIEW_WIDTH;
+            int requestHeight = MAX_PREVIEW_HEIGHT;
             surface = new Surface(texture);
             handle = V4l2CameraNative.open(
                     requestedDevicePath,
@@ -478,7 +483,8 @@ public class V4l2CameraController implements CameraPreviewController {
                 Log.e(TAG, "startPreview: native open failed, slot=" + slot.label
                         + ", devicePath=" + requestedDevicePath
                         + ", error=" + V4l2CameraNative.getLastNativeError());
-                notifyCameraError();
+                markNodeUnavailable(requestedDevicePath);
+                notifyCameraDisconnected(requestedDevicePath);
                 return;
             }
 
@@ -494,7 +500,8 @@ public class V4l2CameraController implements CameraPreviewController {
                 Log.e(TAG, "startPreview: native start failed, slot=" + slot.label
                         + ", handle=" + handle + ", result=" + result);
                 V4l2CameraNative.close(handle);
-                notifyCameraError();
+                markNodeUnavailable(requestedDevicePath);
+                notifyCameraDisconnected(requestedDevicePath);
                 return;
             }
 
@@ -516,7 +523,8 @@ public class V4l2CameraController implements CameraPreviewController {
             if (handle != 0L) {
                 V4l2CameraNative.close(handle);
             }
-            notifyCameraError();
+            markNodeUnavailable(requestedDevicePath);
+            notifyCameraDisconnected(requestedDevicePath);
         } finally {
             if (isSlotRequestCurrent(slot, requestGeneration, requestedDevicePath)) {
                 slot.starting = false;
@@ -561,13 +569,6 @@ public class V4l2CameraController implements CameraPreviewController {
                 && requestedDevicePath.equals(slot.devicePath);
     }
 
-    private int clampPreviewSize(int viewSize, int maxSize) {
-        if (viewSize <= 0) {
-            return maxSize;
-        }
-        return Math.min(viewSize, maxSize);
-    }
-
     private void pollTopology() {
         if (!availabilityMonitorRegistered) {
             Log.d(TAG, "pollTopology skipped: monitor not registered");
@@ -579,11 +580,47 @@ public class V4l2CameraController implements CameraPreviewController {
                 + ", current=" + Arrays.toString(topology));
         notifyDisconnectedIfNeeded(leftSlot, topology);
         notifyDisconnectedIfNeeded(rightSlot, topology);
+        notifyStoppedPreviewIfNeeded(leftSlot);
+        notifyStoppedPreviewIfNeeded(rightSlot);
         if (!Arrays.equals(lastTopology, topology)) {
             lastTopology = topology;
             Log.i(TAG, "pollTopology: topology changed -> " + Arrays.toString(topology));
             mainHandler.post(this::notifyTopologyChanged);
         }
+    }
+
+    private void notifyStoppedPreviewIfNeeded(PreviewSlot slot) {
+        if (slot.nativeHandle == 0L || slot.starting || slot.disconnectReported
+                || V4l2CameraNative.isPreviewActive(slot.nativeHandle)) {
+            return;
+        }
+        slot.disconnectReported = true;
+        String disconnectedPath = slot.devicePath;
+        markNodeUnavailable(disconnectedPath);
+        Log.w(TAG, "notifyStoppedPreviewIfNeeded: slot=" + slot.label
+                + ", devicePath=" + disconnectedPath);
+        mainHandler.post(() -> notifyCameraDisconnected(disconnectedPath));
+    }
+
+    private void markNodeUnavailable(String devicePath) {
+        if (devicePath == null || devicePath.isEmpty()) {
+            return;
+        }
+        long retryAt = android.os.SystemClock.elapsedRealtime() + UNAVAILABLE_NODE_RETRY_MS;
+        unavailableNodesUntil.put(devicePath, retryAt);
+        Log.w(TAG, "markNodeUnavailable: node=" + devicePath + ", retryAt=" + retryAt);
+    }
+
+    private boolean isTemporarilyUnavailable(String devicePath) {
+        Long retryAt = unavailableNodesUntil.get(devicePath);
+        if (retryAt == null) {
+            return false;
+        }
+        if (android.os.SystemClock.elapsedRealtime() >= retryAt) {
+            unavailableNodesUntil.remove(devicePath, retryAt);
+            return false;
+        }
+        return true;
     }
 
     private void notifyDisconnectedIfNeeded(PreviewSlot slot, String[] topology) {

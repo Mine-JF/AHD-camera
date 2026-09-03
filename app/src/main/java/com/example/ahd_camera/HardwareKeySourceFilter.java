@@ -30,10 +30,43 @@ public final class HardwareKeySourceFilter {
 
         if (!accepted && event.getAction() == KeyEvent.ACTION_DOWN
                 && event.getRepeatCount() == 0) {
-            Log.d(TAG, "Ignore non-board key: deviceId=" + event.getDeviceId()
-                    + ", name=" + deviceName + ", keyCode=" + event.getKeyCode()
-                    + ", scanCode=" + event.getScanCode());
+            Log.d(TAG, "Non-board key: " + describeDevice(event, device));
         }
         return accepted;
+    }
+
+    /**
+     * 只有真正的物理字母键盘才允许进入预览页的文字输入。
+     * 鼠标、Consumer Control 等同一接收器暴露出来的辅助 input 节点不会被当成文字键盘。
+     */
+    public static boolean isExternalTextKeyboard(KeyEvent event) {
+        InputDevice device = InputDevice.getDevice(event.getDeviceId());
+        if (device == null || isBoardDevice(device)) {
+            return false;
+        }
+        boolean hasKeyboardSource = (device.getSources() & InputDevice.SOURCE_KEYBOARD)
+                == InputDevice.SOURCE_KEYBOARD;
+        return hasKeyboardSource
+                && device.getKeyboardType() == InputDevice.KEYBOARD_TYPE_ALPHABETIC;
+    }
+
+    private static boolean isBoardDevice(InputDevice device) {
+        String deviceName = device.getName();
+        return GPIO_KEYS_DEVICE_NAME.equals(deviceName) || ADC_KEYS_DEVICE_NAME.equals(deviceName);
+    }
+
+    private static String describeDevice(KeyEvent event, InputDevice device) {
+        if (device == null) {
+            return "deviceId=" + event.getDeviceId() + ", name=null"
+                    + ", keyCode=" + event.getKeyCode() + ", scanCode=" + event.getScanCode();
+        }
+        return "deviceId=" + event.getDeviceId()
+                + ", name=" + device.getName()
+                + ", vendorId=0x" + Integer.toHexString(device.getVendorId())
+                + ", productId=0x" + Integer.toHexString(device.getProductId())
+                + ", sources=0x" + Integer.toHexString(device.getSources())
+                + ", keyboardType=" + device.getKeyboardType()
+                + ", keyCode=" + event.getKeyCode()
+                + ", scanCode=" + event.getScanCode();
     }
 }

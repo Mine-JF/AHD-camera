@@ -3,7 +3,10 @@ package com.example.ahd_camera;
 import android.content.ContentResolver;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
+import android.util.LruCache;
 import android.util.Size;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -16,7 +19,12 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 final class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.GalleryViewHolder> {
 
@@ -29,6 +37,16 @@ final class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.GalleryVi
 
     private final ContentResolver contentResolver;
     private final OnItemClickListener onItemClickListener;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    // 缩略图解析可能因损坏视频或慢速存储卡阻塞；绝不能在 RecyclerView 主线程执行。
+    private final ExecutorService thumbnailExecutor = Executors.newFixedThreadPool(2);
+    private final LruCache<String, Bitmap> thumbnailCache = new LruCache<String, Bitmap>(12 * 1024) {
+        @Override
+        protected int sizeOf(String key, Bitmap bitmap) {
+            return Math.max(1, bitmap.getByteCount() / 1024);
+        }
+    };
+    private final Set<String> pendingThumbnailKeys = Collections.synchronizedSet(new HashSet<>());
     private final List<GalleryItem> items = new ArrayList<>();
     private RecyclerView attachedRecyclerView;
     private int selectedPosition = RecyclerView.NO_POSITION;
@@ -94,14 +112,16 @@ final class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.GalleryVi
         holder.typeView.setBackgroundColor(item.isVideo() ? 0xAA1F5FBF : 0xAA1E7A46);
         holder.bindSelectionState(selected);
 
-        try {
-            Bitmap bitmap = contentResolver.loadThumbnail(item.uri, THUMBNAIL_SIZE, null);
+        String thumbnailKey = item.uri.toString();
+        holder.thumbnailView.setTag(thumbnailKey);
+        Bitmap bitmap = thumbnailCache.get(thumbnailKey);
+        if (bitmap != null) {
             holder.thumbnailView.setImageBitmap(bitmap);
             holder.thumbnailView.setBackgroundColor(Color.TRANSPARENT);
-        } catch (IOException | SecurityException e) {
-            Log.w(TAG, "onBindViewHolder: loadThumbnail failed for " + item.uri, e);
+        } else {
             holder.thumbnailView.setImageDrawable(null);
             holder.thumbnailView.setBackgroundColor(item.isVideo() ? 0xFF10325C : 0xFF1E3A24);
+            loadThumbnailAsync(item, holder.thumbnailView, thumbnailKey);
         }
 
         holder.itemView.setOnFocusChangeListener((v, hasFocus) -> {
@@ -136,6 +156,41 @@ final class GalleryAdapter extends RecyclerView.Adapter<GalleryAdapter.GalleryVi
             attachedRecyclerView = null;
         }
         Log.d(TAG, "onDetachedFromRecyclerView");
+    }
+
+    void release() {
+        thumbnailExecutor.shutdownNow();
+        thumbnailCache.evictAll();
+        pendingThumbnailKeys.clear();
+    }
+
+    private void loadThumbnailAsync(GalleryItem item, ImageView target, String thumbnailKey) {
+        if (!pendingThumbnailKeys.add(thumbnailKey)) {
+            return;
+        }
+        thumbnailExecutor.execute(() -> {
+            Bitmap bitmap = null;
+            try {
+                bitmap = contentResolver.loadThumbnail(item.uri, THUMBNAIL_SIZE, null);
+                if (bitmap != null) {
+                    thumbnailCache.put(thumbnailKey, bitmap);
+                }
+            } catch (IOException | RuntimeException e) {
+                Log.w(TAG, "loadThumbnailAsync: failed for " + item.uri, e);
+            }
+
+            Bitmap result = bitmap;
+            mainHandler.post(() -> {
+                pendingThumbnailKeys.remove(thumbnailKey);
+                if (!thumbnailKey.equals(target.getTag())) {
+                    return;
+                }
+                if (result != null) {
+                    target.setImageBitmap(result);
+                    target.setBackgroundColor(Color.TRANSPARENT);
+                }
+            });
+        });
     }
 
     private void updateVisibleSelectionState(int position, boolean selected) {

@@ -5,13 +5,21 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.content.BroadcastReceiver;
+import android.content.res.Configuration;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
+import android.util.SparseLongArray;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.TextureView;
 import android.view.View;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.graphics.Color;
@@ -27,7 +35,18 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
     private static final String TAG = "Camera_view";
     private static final long BACK_KEY_MIC_LONG_PRESS_MS = 2_000L;
+    private static final long BOARD_KEY_DEBOUNCE_MS = 120L;
     private static final long STATUS_MESSAGE_DURATION_MS = 2_000L;
+    // 顶部 HUD（日期、时间、状态图标）占用区域；输入编辑器不能覆盖该区域。
+    private static final int INPUT_EDITOR_TOP_CLEARANCE_DP = 76;
+    private static final int INPUT_EDITOR_BOTTOM_CLEARANCE_DP = 20;
+    // 1档和2档都低于 VCM 始动电流，将两档合并进起步过程并直接从首个有效的3档开始。
+    private static final int VCM_MIN_LEVEL = 3;
+    private static final int VCM_MAX_LEVEL = 10;
+    // 摇杆保持拨动时快速连续扫档。较短的启动等待保留轻拨单档能力，
+    // 之后约每 35ms 更新一次 PWM，利用 VCM 自身惯性减弱十档之间的跳变感。
+    private static final long VCM_CONTINUOUS_START_DELAY_MS = 55L;
+    private static final long VCM_CONTINUOUS_STEP_INTERVAL_MS = 35L;
     // DnkCounter protocol reports signed steps. Adjust this after wheel calibration if needed.
     private static final float METERS_PER_COUNTER_STEP = 1.0f;
     public static final String ACTION_DISTANCE_UPDATE = "com.example.ahd_camera.action.DISTANCE_UPDATE";
@@ -38,6 +57,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private TextView statusText;
     private View cameraContainer;
     private View cameraHudView;
+    private View cameraHudTopBar;
+    private TextView recordingSubtitleText;
     private CameraPreviewController cameraController;
     private CameraHudController hudController;
     private MicrophoneController microphoneController;
@@ -60,6 +81,15 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private boolean backKeyDown;
     private boolean backKeyLongPressHandled;
     private boolean lightEnabled;
+    // VCM 没有位置反馈；该值仅表示当前页面已成功发送的 PWM 档位。
+    private int focusLevel;
+    private int focusAdjustDelta;
+    private int activeFocusKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private final StringBuilder directInputText = new StringBuilder();
+    private EditText hardwareKeyboardEditor;
+    private boolean clearingHardwareKeyboardEditor;
+    // 按键抖动通常会形成 DOWN-UP-DOWN；保留最近 DOWN 的时间而不在 UP 时清除。
+    private final SparseLongArray lastBoardKeyDownTimes = new SparseLongArray();
     // 定时刷新顶部时间、电量、Wi‑Fi 和存储状态，避免每个状态都自己开轮询。
     private final Runnable hudRefreshRunnable = new Runnable() {
         @Override
@@ -88,6 +118,19 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         hudController.refresh();
     };
     private final Runnable hideStatusRunnable = this::hideStatus;
+    private final Runnable continuousFocusRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (focusAdjustDelta == 0) {
+                return;
+            }
+            if (changeFocusLevel(focusAdjustDelta)) {
+                mainHandler.postDelayed(this, VCM_CONTINUOUS_STEP_INTERVAL_MS);
+            } else {
+                stopContinuousFocusAdjustment();
+            }
+        }
+    };
     private final BroadcastReceiver distanceReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(android.content.Context context, Intent intent) {
@@ -134,6 +177,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
         cameraContainer = findViewById(R.id.camera_container);
         cameraHudView = findViewById(R.id.camera_hud);
+        cameraHudTopBar = findViewById(R.id.camera_hud_top_bar);
+        recordingSubtitleText = findViewById(R.id.recording_subtitle);
         leftCameraContainer = findViewById(R.id.left_camera_container);
         rightCameraContainer = findViewById(R.id.right_camera_container);
         statusText = findViewById(R.id.status_text);
@@ -152,6 +197,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         hudController.refresh();
 
         cameraController.bindPreviews(leftPreview, rightPreview);
+        setupHardwareKeyboardEditor();
         android.util.Log.d(TAG, "onCreate: view init finished");
     }
 
@@ -161,6 +207,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         super.onResume();
         android.util.Log.d(TAG, "onResume: start camera flow");
         Utils.hideSystemUI(getWindow());
+        focusHardwareKeyboardEditor();
         if (!distanceReceiverRegistered) {
             registerReceiver(distanceReceiver, new IntentFilter(ACTION_DISTANCE_UPDATE));
             distanceReceiverRegistered = true;
@@ -192,7 +239,9 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         mainHandler.removeCallbacks(hudRefreshRunnable);
         mainHandler.removeCallbacks(backKeyLongPressRunnable);
         mainHandler.removeCallbacks(hideStatusRunnable);
+        stopContinuousFocusAdjustment();
         distanceCounterController.stop();
+        focusLevel = 0;
         backKeyDown = false;
         backKeyLongPressHandled = false;
         if (distanceReceiverRegistered) {
@@ -217,7 +266,25 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         android.util.Log.d(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus);
         if (hasFocus) {
             Utils.hideSystemUI(getWindow());
+            focusHardwareKeyboardEditor();
         }
+    }
+
+    /**
+     * 2.4G/USB HID 插拔会改变系统的 keyboard、keyboardHidden 或 navigation 配置。
+     * Manifest 已声明由当前 Activity 自行处理，避免系统重建页面并在 onPause() 中
+     * 关闭 AHD 视频流。这里只恢复沉浸式界面和隐藏文字编辑器的焦点。
+     */
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        android.util.Log.i(TAG, "onConfigurationChanged: keyboard=" + newConfig.keyboard
+                + ", keyboardHidden=" + newConfig.keyboardHidden
+                + ", hardKeyboardHidden=" + newConfig.hardKeyboardHidden
+                + ", navigation=" + newConfig.navigation
+                + "; keep AHD preview running");
+        Utils.hideSystemUI(getWindow());
+        focusHardwareKeyboardEditor();
     }
 
     // 先检查相机权限，已有权限则直接开始预览，没有则发起权限申请。
@@ -358,12 +425,21 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (!HardwareKeySourceFilter.isBoardKey(event)) {
-            return true;
+            // 仅外接的物理字母键盘可输入文字；同一接收器的鼠标/Consumer Control 节点忽略。
+            return HardwareKeySourceFilter.isExternalTextKeyboard(event)
+                    ? handleExternalKeyboardInput(event)
+                    : true;
         }
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            // 板载按键的长按重复和机械抖动都不能重复触发拍照、录像、切页或电机命令。
+            if (event.getRepeatCount() > 0 || isBoardKeyDebounced(event)) {
+                return true;
+            }
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_Z) {
             return handleBackKey(event);
         }
-        if (event.getScanCode() == 0x163 || event.getKeyCode() == KeyEvent.KEYCODE_CLEAR) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_4) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 boolean resetSent = motorController.resetDistanceCounter();
                 android.util.Log.i(TAG, "distance clear key: sent=" + resetSent
@@ -376,7 +452,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             }
             return true;
         }
-        if (event.getKeyCode() == KeyEvent.KEYCODE_T) {
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_8) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
                 // T 为开关键：每次有效按下在“关闭”和“10档最亮”之间切换。
                 boolean nextEnabled = !lightEnabled;
@@ -405,24 +481,24 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
-                case KeyEvent.KEYCODE_MENU:
+                case KeyEvent.KEYCODE_BUTTON_3:
                     android.util.Log.d(TAG, "dispatchKeyEvent: open settings");
                     openSettings();
                     return true;
-                case KeyEvent.KEYCODE_G:
+                case KeyEvent.KEYCODE_BUTTON_1:
                     android.util.Log.d(TAG, "dispatchKeyEvent: open gallery");
                     startActivity(new Intent(this, GalleryActivity.class));
                     return true;
-                case KeyEvent.KEYCODE_V:
-                case KeyEvent.KEYCODE_ENTER:
+                case KeyEvent.KEYCODE_BUTTON_5:
+                case KeyEvent.KEYCODE_BUTTON_7:
                     android.util.Log.d(TAG, "dispatchKeyEvent: capture photo");
                     capturePhoto();
                     return true;
-                case KeyEvent.KEYCODE_Y:
+                case KeyEvent.KEYCODE_BUTTON_9:
                     android.util.Log.d(TAG, "dispatchKeyEvent: toggle recording");
                     toggleVideoRecording();
                     return true;
-                case KeyEvent.KEYCODE_H:
+                case KeyEvent.KEYCODE_BUTTON_6:
                     android.util.Log.d(TAG, "dispatchKeyEvent: rotate preview");
                     rotatePreviewClockwise();
                     return true;
@@ -433,37 +509,84 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         return super.dispatchKeyEvent(event);
     }
 
-    /**
-     * GPIO4_B3~B6 编码器按键：W/S 调整电机3焦距，D/A 调整电机3驱动档位。
-     * W/S 松开时不发送 0x0A，确保 MCU 保持 VCM 电流，从而维持当前对焦状态。
-     */
+    private boolean isBoardKeyDebounced(KeyEvent event) {
+        long now = SystemClock.uptimeMillis();
+        int keyCode = event.getKeyCode();
+        int index = lastBoardKeyDownTimes.indexOfKey(keyCode);
+        long previousDownAt = index >= 0 ? lastBoardKeyDownTimes.valueAt(index) : 0L;
+        lastBoardKeyDownTimes.put(keyCode, now);
+        if (index >= 0 && now - previousDownAt < BOARD_KEY_DEBOUNCE_MS) {
+            android.util.Log.d(TAG, "dispatchKeyEvent: debounce keyCode=" + keyCode);
+            return true;
+        }
+        return false;
+    }
+
+    /** BUTTON_C/Y 摇杆：拨住后连续调节 VCM，松开后保持当前 PWM 档位。 */
     private boolean handleFocusKey(KeyEvent event) {
         int keyCode = event.getKeyCode();
-        if (keyCode == KeyEvent.KEYCODE_W || keyCode == KeyEvent.KEYCODE_S) {
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_C || keyCode == KeyEvent.KEYCODE_BUTTON_Y) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                int command = keyCode == KeyEvent.KEYCODE_W
-                        ? MotorController.COMMAND_FOCUS_UP : MotorController.COMMAND_FOCUS_DOWN;
-                android.util.Log.i(TAG, "focus key down: command=" + command);
-                motorController.moveFocus(command);
-            } else if (event.getAction() == KeyEvent.ACTION_UP) {
-                // The MCU keeps the VCM energized after CMD_FOCUS_UP/DOWN. Do not send
-                // CMD_STOP_FOCUS here: Coast mode releases coil current and loses focus.
-                android.util.Log.i(TAG, "focus key up: retain VCM holding current");
+                startContinuousFocusAdjustment(
+                        keyCode,
+                        keyCode == KeyEvent.KEYCODE_BUTTON_C ? 1 : -1);
+            } else if (event.getAction() == KeyEvent.ACTION_UP
+                    && keyCode == activeFocusKeyCode) {
+                stopContinuousFocusAdjustment();
             }
             return true;
         }
 
-        if (keyCode == KeyEvent.KEYCODE_D || keyCode == KeyEvent.KEYCODE_A) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                int command = keyCode == KeyEvent.KEYCODE_D
-                        ? MotorController.COMMAND_FOCUS_SPEED_UP
-                        : MotorController.COMMAND_FOCUS_SPEED_DOWN;
-                android.util.Log.i(TAG, "focus speed key: command=" + command);
-                motorController.adjustFocusSpeed(command);
-            }
+        // BUTTON_B/X 为预留物理键，不能绕过应用维护的逐级档位状态。
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BUTTON_X) {
             return true;
         }
         return false;
+    }
+
+    private void startContinuousFocusAdjustment(int keyCode, int delta) {
+        mainHandler.removeCallbacks(continuousFocusRunnable);
+        activeFocusKeyCode = keyCode;
+        focusAdjustDelta = delta;
+
+        // 按下立即响应；继续拨住摇杆时自动连续变化，短拨仍可精确微调一档。
+        if (changeFocusLevel(delta)) {
+            mainHandler.postDelayed(continuousFocusRunnable, VCM_CONTINUOUS_START_DELAY_MS);
+        } else {
+            stopContinuousFocusAdjustment();
+        }
+    }
+
+    private void stopContinuousFocusAdjustment() {
+        mainHandler.removeCallbacks(continuousFocusRunnable);
+        focusAdjustDelta = 0;
+        activeFocusKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    }
+
+    private boolean changeFocusLevel(int delta) {
+        int nextLevel = focusLevel + delta;
+        if (delta > 0 && focusLevel == 0) {
+            nextLevel = VCM_MIN_LEVEL;
+        }
+        if (nextLevel < VCM_MIN_LEVEL || nextLevel > VCM_MAX_LEVEL) {
+            android.util.Log.d(TAG, nextLevel < VCM_MIN_LEVEL
+                    ? "changeFocusLevel: already at minimum"
+                    : "changeFocusLevel: already at maximum");
+            return false;
+        }
+
+        // VCM 的位置由同一方向上的 PWM 占空比决定。减档时如果发送反向命令
+        // COMMAND_FOCUS_DOWN，反向电流叠加弹簧回位会让镜头直接退回；因此
+        // 有效档3~10及10~3都使用正向驱动，只改变目标 PWM 档位。
+        int command = MotorController.COMMAND_FOCUS_UP;
+        if (motorController.moveFocusAtLevel(command, nextLevel)) {
+            focusLevel = nextLevel;
+            android.util.Log.i(TAG, "changeFocusLevel: command=" + command + ", level=" + focusLevel);
+            return true;
+        } else {
+            android.util.Log.e(TAG, "changeFocusLevel: send failed, level=" + nextLevel);
+            return false;
+        }
     }
 
     private boolean handleBackKey(KeyEvent event) {
@@ -496,15 +619,13 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
     private int commandForDirectionKey(int keyCode) {
         switch (keyCode) {
-            // 电机使用 GPIO4_A5/A7/A6/A4 对应的 I/K/J/L 键。
-            // DPAD 键保留给设置、图库等页面进行界面导航。
-            case KeyEvent.KEYCODE_I:
+            case KeyEvent.KEYCODE_BUTTON_14:
                 return MotorController.COMMAND_UP;
-            case KeyEvent.KEYCODE_K:
+            case KeyEvent.KEYCODE_BUTTON_15:
                 return MotorController.COMMAND_DOWN;
-            case KeyEvent.KEYCODE_J:
+            case KeyEvent.KEYCODE_BUTTON_16:
                 return MotorController.COMMAND_LEFT;
-            case KeyEvent.KEYCODE_L:
+            case KeyEvent.KEYCODE_BUTTON_A:
                 return MotorController.COMMAND_RIGHT;
             default:
                 return 0;
@@ -659,21 +780,155 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             @Override
             public void onRecordingStarted(android.net.Uri uri) {
                 android.util.Log.i(TAG, "toggleVideoRecording: started, uri=" + uri);
-                runOnUiThread(() -> showStatus("开始录像"));
+                runOnUiThread(() -> {
+                    clearRecordingSubtitles();
+                    showStatus("开始录像（可直接键盘输入文字）");
+                });
             }
 
             @Override
             public void onRecordingStopped(android.net.Uri uri) {
                 android.util.Log.i(TAG, "toggleVideoRecording: stopped, uri=" + uri);
-                runOnUiThread(() -> showStatus("录像已保存"));
+                runOnUiThread(() -> {
+                    clearRecordingSubtitles();
+                    showStatus("录像已保存");
+                });
             }
 
             @Override
             public void onRecordingFailed(String error) {
                 android.util.Log.e(TAG, "toggleVideoRecording: failed, error=" + error);
-                runOnUiThread(() -> showStatus("录像失败"));
+                runOnUiThread(() -> {
+                    clearRecordingSubtitles();
+                    showStatus("录像失败");
+                });
             }
         });
+    }
+
+    private boolean handleExternalKeyboardInput(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE) {
+            clearRecordingSubtitles();
+            return true;
+        }
+        // 交给隐藏的 EditText 和系统输入法处理，可获得拼音上屏后的中文字符。
+        return super.dispatchKeyEvent(event);
+    }
+
+    private void setupHardwareKeyboardEditor() {
+        FrameLayout root = findViewById(R.id.main);
+        if (root == null) {
+            android.util.Log.e(TAG, "setupHardwareKeyboardEditor: root view not found");
+            return;
+        }
+        hardwareKeyboardEditor = new EditText(this);
+        float density = getResources().getDisplayMetrics().density;
+        FrameLayout.LayoutParams keyboardEditorParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+        keyboardEditorParams.gravity = Gravity.TOP | Gravity.START;
+        // 输入区域覆盖预览，但避开顶部 HUD，底部固定留 20dp。
+        keyboardEditorParams.topMargin = (int) (INPUT_EDITOR_TOP_CLEARANCE_DP * density);
+        keyboardEditorParams.bottomMargin = (int) (INPUT_EDITOR_BOTTOM_CLEARANCE_DP * density);
+        hardwareKeyboardEditor.setLayoutParams(keyboardEditorParams);
+        hardwareKeyboardEditor.setAlpha(0f);
+        hardwareKeyboardEditor.setBackground(null);
+        hardwareKeyboardEditor.setCursorVisible(false);
+        hardwareKeyboardEditor.setSingleLine(false);
+        hardwareKeyboardEditor.setMaxLines(Integer.MAX_VALUE);
+        hardwareKeyboardEditor.setGravity(Gravity.TOP | Gravity.START);
+        hardwareKeyboardEditor.setHorizontallyScrolling(false);
+        hardwareKeyboardEditor.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        hardwareKeyboardEditor.setShowSoftInputOnFocus(false);
+        hardwareKeyboardEditor.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence text, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence text, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable editable) {
+                if (!clearingHardwareKeyboardEditor) {
+                    syncDirectInputFromEditor(editable);
+                }
+            }
+        });
+        root.addView(hardwareKeyboardEditor);
+        root.post(this::updateHardwareKeyboardEditorBounds);
+        focusHardwareKeyboardEditor();
+    }
+
+    private void updateHardwareKeyboardEditorBounds() {
+        if (hardwareKeyboardEditor == null) {
+            return;
+        }
+        FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) hardwareKeyboardEditor.getLayoutParams();
+        float density = getResources().getDisplayMetrics().density;
+        int minimumTopClearance = (int) (INPUT_EDITOR_TOP_CLEARANCE_DP * density);
+        int hudBottom = cameraHudTopBar == null ? 0 : cameraHudTopBar.getBottom();
+        int topMargin = Math.max(minimumTopClearance, hudBottom + (int) (8 * density));
+        int bottomMargin = (int) (INPUT_EDITOR_BOTTOM_CLEARANCE_DP * density);
+        params.topMargin = topMargin;
+        params.bottomMargin = bottomMargin;
+        hardwareKeyboardEditor.setLayoutParams(params);
+
+        // 可见文字层与隐藏编辑器使用完全相同的有效区域：从上向下排列，保留换行。
+        if (recordingSubtitleText != null) {
+            FrameLayout.LayoutParams subtitleParams =
+                    (FrameLayout.LayoutParams) recordingSubtitleText.getLayoutParams();
+            subtitleParams.topMargin = topMargin;
+            subtitleParams.bottomMargin = bottomMargin;
+            recordingSubtitleText.setLayoutParams(subtitleParams);
+        }
+    }
+
+    private void focusHardwareKeyboardEditor() {
+        if (hardwareKeyboardEditor != null) {
+            updateHardwareKeyboardEditorBounds();
+            hardwareKeyboardEditor.requestFocus();
+        }
+    }
+
+    private void syncDirectInputFromEditor(Editable editable) {
+        directInputText.setLength(0);
+        directInputText.append(editable);
+        if (directInputText.length() == 0) {
+            if (recordingSubtitleText != null) {
+                recordingSubtitleText.setText("");
+                recordingSubtitleText.setVisibility(View.GONE);
+            }
+            return;
+        }
+        updateDirectInputOverlay();
+    }
+
+    private void updateDirectInputOverlay() {
+        if (recordingSubtitleText == null || directInputText.length() == 0) {
+            return;
+        }
+        recordingSubtitleText.setText(directInputText);
+        recordingSubtitleText.setVisibility(View.VISIBLE);
+        // 预览时持续显示；录像时该叠加层会随帧合成写入 MP4，直到用户手动清除。
+    }
+
+    private void clearRecordingSubtitles() {
+        clearDirectInputOverlay();
+    }
+
+    private void clearDirectInputOverlay() {
+        directInputText.setLength(0);
+        if (hardwareKeyboardEditor != null && hardwareKeyboardEditor.length() > 0) {
+            clearingHardwareKeyboardEditor = true;
+            hardwareKeyboardEditor.setText("");
+            clearingHardwareKeyboardEditor = false;
+        }
+        if (recordingSubtitleText != null) {
+            recordingSubtitleText.setText("");
+            recordingSubtitleText.setVisibility(View.GONE);
+        }
     }
 
     private CameraPreviewController createCameraController() {

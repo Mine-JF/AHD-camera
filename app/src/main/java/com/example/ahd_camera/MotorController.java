@@ -60,27 +60,21 @@ final class MotorController {
     }
 
     /**
-     * 控制电机3 VCM 向上/向下对焦。
-     * level=0 是 MCU 协议规定的默认10档；MCU 会持续保持该驱动，直到收到新命令或停止命令。
+     * 以指定的 1~10 档驱动电机3 VCM。档位代表 PWM 占空比，不使用 0=默认10档，
+     * 以便页面层可以逐级调整。MCU 会持续保持当前驱动，直到收到新命令或停止命令。
      */
-    void moveFocus(int command) {
-        if (!start()) {
-            return;
+    boolean moveFocusAtLevel(int command, int level) {
+        if ((command != COMMAND_FOCUS_UP && command != COMMAND_FOCUS_DOWN)
+                || level < 1 || level > 10 || !start()) {
+            return false;
         }
-        V4l2CameraNative.sendMotorCommand(command, 0);
+        return V4l2CameraNative.sendMotorCommand(command, level);
     }
 
     /** 让 VCM 进入 Coast 模式并断电，镜头可能因弹簧作用回位。 */
     void stopFocus() {
         if (opened) {
             V4l2CameraNative.sendMotorCommand(COMMAND_STOP_FOCUS, 0);
-        }
-    }
-
-    /** 调整正在运行的 VCM 档位；电机3未运行或已到档位边界时 MCU 会返回错误。 */
-    void adjustFocusSpeed(int command) {
-        if (start()) {
-            V4l2CameraNative.sendMotorCommand(command, 0);
         }
     }
 

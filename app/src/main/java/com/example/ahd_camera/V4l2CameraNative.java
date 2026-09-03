@@ -90,6 +90,10 @@ public final class V4l2CameraNative {
         return result;
     }
 
+    public static boolean isPreviewActive(long handle) {
+        return AVAILABLE && handle != 0L && nativeIsPreviewActive(handle);
+    }
+
     public static void stopPreview(long handle) {
         if (!AVAILABLE || handle == 0L) {
             Log.d(TAG, "stopPreview skipped: available=" + AVAILABLE + ", handle=" + handle);
@@ -168,6 +172,8 @@ public final class V4l2CameraNative {
     private static native long nativeOpen(String devicePath, int width, int height, int pixelFormat);
 
     private static native int nativeStartPreview(long handle, Surface surface);
+
+    private static native boolean nativeIsPreviewActive(long handle);
 
     private static native void nativeStopPreview(long handle);
 

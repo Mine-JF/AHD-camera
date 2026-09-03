@@ -227,8 +227,8 @@ bool ConfigureMotorSerial(int fd) {
         return false;
     }
     cfmakeraw(&settings);
-    if (cfsetispeed(&settings, B9600) == -1 || cfsetospeed(&settings, B9600) == -1) {
-        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 9600 baud"));
+    if (cfsetispeed(&settings, B115200) == -1 || cfsetospeed(&settings, B115200) == -1) {
+        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 115200 baud"));
         return false;
     }
     settings.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
@@ -481,6 +481,7 @@ void PreviewLoop(CameraContext* context) {
     using Clock = std::chrono::steady_clock;
     auto fpsWindowStart = Clock::now();
     uint32_t fpsWindowFrames = 0;
+    int consecutivePollTimeouts = 0;
 
     {
         std::lock_guard<std::mutex> lock(context->mutex);
@@ -511,6 +512,17 @@ void PreviewLoop(CameraContext* context) {
 
         const int pollResult = poll(&pollFd, 1, kPollTimeoutMs);
         if (pollResult == 0) {
+            consecutivePollTimeouts++;
+            LogPrint(ANDROID_LOG_WARN, "Preview poll timeout for %s (%d/2)",
+                    context->devicePath.c_str(), consecutivePollTimeouts);
+            // 热拔出后设备节点可能仍存在。连续约3秒没有帧时结束本路预览，
+            // 由 Java 侧的拓扑监控切换布局并等待重新连接。
+            if (consecutivePollTimeouts >= 2) {
+                LogPrint(ANDROID_LOG_ERROR,
+                        "Preview stream disconnected after repeated timeouts: %s",
+                        context->devicePath.c_str());
+                break;
+            }
             continue;
         }
         if (pollResult < 0) {
@@ -521,6 +533,7 @@ void PreviewLoop(CameraContext* context) {
                     context->devicePath.c_str(), strerror(errno));
             break;
         }
+        consecutivePollTimeouts = 0;
 
         v4l2_buffer buffer{};
         buffer.type = context->bufferType;
@@ -850,6 +863,19 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeStartPreview(
     return 0;
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeIsPreviewActive(
+        JNIEnv* /* env */,
+        jclass /* clazz */,
+        jlong handle) {
+    CameraContext* context = FromHandle(handle);
+    if (context == nullptr) {
+        return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> lock(context->mutex);
+    return context->previewStarted ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_ahd_1camera_V4l2CameraNative_nativeStopPreview(
         JNIEnv* /* env */,
@@ -923,7 +949,7 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
         return JNI_FALSE;
     }
     gMotorSequence = 0;
-    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 9600 8N1", path.c_str());
+    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 115200 8N1", path.c_str());
     return JNI_TRUE;
 }
 

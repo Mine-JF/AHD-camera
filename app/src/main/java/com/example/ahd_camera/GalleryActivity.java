@@ -67,6 +67,14 @@ public class GalleryActivity extends AppCompatActivity {
         ensureMediaPermissionAndLoad();
     }
 
+    @Override
+    protected void onDestroy() {
+        if (adapter != null) {
+            adapter.release();
+        }
+        super.onDestroy();
+    }
+
     private void ensureMediaPermissionAndLoad() {
         if (hasMediaReadPermission()) {
             Log.d(TAG, "ensureMediaPermissionAndLoad: permission granted");
@@ -260,29 +268,26 @@ public class GalleryActivity extends AppCompatActivity {
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
-                case KeyEvent.KEYCODE_BACK:
-                case KeyEvent.KEYCODE_MENU:
+                case KeyEvent.KEYCODE_BUTTON_Z:
+                case KeyEvent.KEYCODE_BUTTON_3:
                     Log.d(TAG, "dispatchKeyEvent: exit gallery");
                     finish();
                     return true;
-                case KeyEvent.KEYCODE_ENTER:
-                case KeyEvent.KEYCODE_NUMPAD_ENTER:
-                case KeyEvent.KEYCODE_DPAD_CENTER:
-                case KeyEvent.KEYCODE_MEDIA_PLAY:
-                case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:
+                case KeyEvent.KEYCODE_BUTTON_2:
+                case KeyEvent.KEYCODE_BUTTON_7:
                     Log.d(TAG, "dispatchKeyEvent: open selected item");
                     openSelectedItem();
                     return true;
-                case KeyEvent.KEYCODE_DPAD_LEFT:
+                case KeyEvent.KEYCODE_BUTTON_12:
                     moveSelection(-1);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                case KeyEvent.KEYCODE_BUTTON_13:
                     moveSelection(1);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_UP:
+                case KeyEvent.KEYCODE_BUTTON_10:
                     moveSelection(-GRID_SPAN_COUNT);
                     return true;
-                case KeyEvent.KEYCODE_DPAD_DOWN:
+                case KeyEvent.KEYCODE_BUTTON_11:
                     moveSelection(GRID_SPAN_COUNT);
                     return true;
                 default:
