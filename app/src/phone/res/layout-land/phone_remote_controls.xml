@@ -1,0 +1,162 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:id="@+id/phone_controls_content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="bottom"
+        android:orientation="horizontal"
+        android:padding="8dp">
+
+        <FrameLayout
+            android:layout_width="150dp"
+            android:layout_height="150dp"
+            android:layout_marginBottom="4dp"
+            android:alpha="0.82"
+            android:background="@drawable/phone_direction_ring">
+
+            <Button
+                android:id="@+id/phone_up"
+                style="@style/PhoneDirectionButton"
+                android:layout_width="72dp"
+                android:layout_height="44dp"
+                android:layout_gravity="top|center_horizontal"
+                android:text="▲" />
+
+            <Button
+                android:id="@+id/phone_left"
+                style="@style/PhoneDirectionButton"
+                android:layout_width="44dp"
+                android:layout_height="72dp"
+                android:layout_gravity="center_vertical|left"
+                android:text="◀" />
+
+            <Button
+                android:id="@+id/phone_right"
+                style="@style/PhoneDirectionButton"
+                android:layout_width="44dp"
+                android:layout_height="72dp"
+                android:layout_gravity="center_vertical|right"
+                android:text="▶" />
+
+            <Button
+                android:id="@+id/phone_down"
+                style="@style/PhoneDirectionButton"
+                android:layout_width="72dp"
+                android:layout_height="44dp"
+                android:layout_gravity="bottom|center_horizontal"
+                android:text="▼" />
+
+            <Button
+                android:id="@+id/phone_ok_home"
+                style="@style/PhoneDirectionCenterButton"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_gravity="center"
+                android:text="OK / HOME" />
+        </FrameLayout>
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <LinearLayout
+            android:layout_width="220dp"
+            android:layout_height="wrap_content"
+            android:alpha="0.84"
+            android:background="@drawable/phone_remote_overlay_panel"
+            android:orientation="vertical"
+            android:padding="5dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/phone_focus_minus"
+                    style="@style/PhoneControlButton"
+                    android:text="对焦 −" />
+
+                <Button
+                    android:id="@+id/phone_focus_plus"
+                    style="@style/PhoneControlButton"
+                    android:text="对焦 +" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/phone_distance_reset"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="计米清零" />
+
+                <Button
+                    android:id="@+id/phone_light"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="补光灯" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/phone_menu"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="MENU" />
+
+                <Button
+                    android:id="@+id/phone_back"
+                    style="@style/PhoneControlButton"
+                    android:text="返回/麦克风" />
+
+                <Button
+                    android:id="@+id/phone_rotate"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="旋转" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/phone_photo"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="拍照" />
+
+                <Button
+                    android:id="@+id/phone_record"
+                    style="@style/PhoneControlButton"
+                    android:onClick="onRemoteButtonClick"
+                    android:text="● REC" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <Button
+        android:id="@+id/phone_toggle_controls"
+        android:layout_width="72dp"
+        android:layout_height="38dp"
+        android:layout_gravity="top|right"
+        android:layout_margin="8dp"
+        android:background="@drawable/phone_remote_overlay_panel"
+        android:text="隐藏控件"
+        android:textColor="#FFFFFF"
+        android:textSize="11sp" />
+</FrameLayout>

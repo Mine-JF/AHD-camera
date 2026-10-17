@@ -6,6 +6,7 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import com.example.ahd_camera.R;
+import com.example.ahd_camera.DistanceUnitPreference;
 
 import java.util.Locale;
 
@@ -18,6 +19,7 @@ public class CountSettingsController implements SettingsContentController {
 
     @Override
     public void bind(View view) {
+        useMetric = !DistanceUnitPreference.usesFeet(view.getContext());
         Log.d(TAG, "bind: start, useMetric=" + useMetric + ", meterStep=" + meterStep);
         Button metricButton = view.findViewById(R.id.btn_count_metric);
         Button imperialButton = view.findViewById(R.id.btn_count_imperial);
@@ -26,6 +28,7 @@ public class CountSettingsController implements SettingsContentController {
         // 单位按钮互斥，保持当前选中状态同步。
         View.OnClickListener unitListener = clickedView -> {
             useMetric = clickedView.getId() == R.id.btn_count_metric;
+            DistanceUnitPreference.setUsesFeet(view.getContext(), !useMetric);
             metricButton.setSelected(useMetric);
             imperialButton.setSelected(!useMetric);
             Log.d(TAG, "bind: unit changed, useMetric=" + useMetric);

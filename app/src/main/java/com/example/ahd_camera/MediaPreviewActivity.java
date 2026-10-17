@@ -18,6 +18,14 @@ public class MediaPreviewActivity extends AppCompatActivity {
     static final String EXTRA_TITLE = "title";
 
     private static final String TAG = "MediaPreviewActivity";
+    private final OkHomeKeyHandler okHomeKeyHandler = new OkHomeKeyHandler(
+            this::finish, () -> OkHomeKeyHandler.returnToPreview(this));
+
+    @Override
+    protected void onDestroy() {
+        okHomeKeyHandler.cancel();
+        super.onDestroy();
+    }
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -64,17 +72,23 @@ public class MediaPreviewActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        okHomeKeyHandler.cancel();
+        super.onPause();
+    }
+
+    @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
         }
+        if (okHomeKeyHandler.handle(event)) return true;
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
                 case KeyEvent.KEYCODE_BUTTON_Z:
                 case KeyEvent.KEYCODE_BUTTON_2:
                 case KeyEvent.KEYCODE_BUTTON_3:
-                case KeyEvent.KEYCODE_BUTTON_7:
                     Log.d(TAG, "dispatchKeyEvent: close preview");
                     finish();
                     return true;

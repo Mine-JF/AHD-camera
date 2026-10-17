@@ -19,15 +19,20 @@ import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.ahd_camera.R;
 import com.example.ahd_camera.HardwareKeySourceFilter;
+import com.example.ahd_camera.OkHomeKeyHandler;
 import com.example.ahd_camera.Utils;
 
 import java.util.Arrays;
 import java.util.List;
+import java.lang.ref.WeakReference;
 import android.util.Log;
 
 public class Settings extends AppCompatActivity {
 
     private static final String TAG = "Settings";
+    private final OkHomeKeyHandler okHomeKeyHandler = new OkHomeKeyHandler(
+            () -> handleRemoteCommand("OK"), () -> OkHomeKeyHandler.returnToPreview(this));
+    private static WeakReference<Settings> activeRemoteSettings = new WeakReference<>(null);
 
     private RecyclerView rvLeftMenu;
     private FrameLayout rightContentContainer;
@@ -108,6 +113,7 @@ public class Settings extends AppCompatActivity {
             currentController = createController(position);
             currentController.bind(view);
             currentController.onShow();
+            prepareRemoteFocus(view);
             Log.d(TAG, "showRightContent: layoutId=" + layoutId
                     + ", controller=" + currentController.getClass().getSimpleName());
         } catch (RuntimeException e) {
@@ -120,9 +126,28 @@ public class Settings extends AppCompatActivity {
         View firstFocusable = findFirstFocusable(rightContentContainer);
         if (firstFocusable != null) {
             Log.d(TAG, "enterRightContent: focus=" + firstFocusable.getClass().getSimpleName());
-            firstFocusable.requestFocus();
+            focusRemoteView(firstFocusable);
         } else {
             Log.w(TAG, "enterRightContent: no focusable view found");
+        }
+    }
+
+    private void focusRemoteView(View view) {
+        if (!view.requestFocus()) {
+            Log.w(TAG, "remote focus rejected: " + view.getClass().getSimpleName());
+        }
+    }
+
+    private void prepareRemoteFocus(View view) {
+        if (view == null) return;
+        // focusSearch() only considers touch-mode focusable targets while the board
+        // remains in touch mode. Prepare every option, not just the first one.
+        if (view.isFocusable() && view.isEnabled()) view.setFocusableInTouchMode(true);
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                prepareRemoteFocus(group.getChildAt(i));
+            }
         }
     }
 
@@ -244,6 +269,8 @@ public class Settings extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        ((com.example.ahd_camera.BoardRemoteApplication) getApplication()).bindActivity(this);
+        activeRemoteSettings = new WeakReference<>(this);
         Log.d(TAG, "onResume");
         Utils.hideSystemUI(getWindow());
         if (currentController != null) {
@@ -254,10 +281,73 @@ public class Settings extends AppCompatActivity {
     @Override
     protected void onPause() {
         Log.d(TAG, "onPause");
+        okHomeKeyHandler.cancel();
+        if (activeRemoteSettings.get() == this) activeRemoteSettings.clear();
         if (currentController != null) {
             currentController.onHide();
         }
         super.onPause();
+    }
+
+    /** Camera_view keeps the remote connection while this page is visible. Called on the UI thread. */
+    public static void dispatchRemoteCommand(String command) {
+        Settings settings = activeRemoteSettings.get();
+        if (settings == null) {
+            Log.w(TAG, "remote command ignored: Settings not resumed, command=" + command);
+            return;
+        }
+        settings.handleRemoteCommand(command);
+    }
+
+    public void handleRemoteCommand(String command) {
+        Log.i(TAG, "remote command: " + command);
+        if ("HOME".equals(command)) {
+            finish();
+            return;
+        }
+        View focused = getCurrentFocus();
+        boolean inRightPane = isDescendant(focused, rightContentContainer);
+        if ("BACK".equals(command) || "BACK_LONG".equals(command)) {
+            if (inRightPane) {
+                rvLeftMenu.requestFocus();
+                rvLeftMenu.post(() -> focusLeftMenuItem(menuAdapter != null
+                        ? menuAdapter.getSelectedPosition() : 0));
+            } else {
+                finish();
+            }
+            return;
+        }
+        if ("OK".equals(command)) {
+            if (inRightPane && focused != null) focused.performClick();
+            else enterRightContent();
+            return;
+        }
+        int direction;
+        switch (command) {
+            case "UP_DOWN": direction = View.FOCUS_UP; break;
+            case "DOWN_DOWN": direction = View.FOCUS_DOWN; break;
+            case "LEFT_DOWN": direction = View.FOCUS_LEFT; break;
+            case "RIGHT_DOWN": direction = View.FOCUS_RIGHT; break;
+            default: return; // Direction release is only meaningful for motors.
+        }
+        if (!inRightPane) {
+            if (direction == View.FOCUS_UP) moveMenuSelection(-1);
+            else if (direction == View.FOCUS_DOWN) moveMenuSelection(1);
+            // Match the board keys: OK enters the right pane; RIGHT alone does not.
+            return;
+        }
+        if (focused instanceof SeekBar && (direction == View.FOCUS_LEFT
+                || direction == View.FOCUS_RIGHT)) {
+            SeekBar seekBar = (SeekBar) focused;
+            int delta = direction == View.FOCUS_LEFT ? -1 : 1;
+            seekBar.setProgress(Math.max(0, Math.min(seekBar.getMax(),
+                    seekBar.getProgress() + delta)));
+            return;
+        }
+        if (focused != null) {
+            View next = focused.focusSearch(direction);
+            if (next != null && isDescendant(next, rightContentContainer)) focusRemoteView(next);
+        }
     }
 
     @Override
@@ -265,6 +355,7 @@ public class Settings extends AppCompatActivity {
         super.onWindowFocusChanged(hasFocus);
         Log.d(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus);
         if (hasFocus) {
+            ((com.example.ahd_camera.BoardRemoteApplication) getApplication()).bindActivity(this);
             Utils.hideSystemUI(getWindow());
         }
     }
@@ -272,6 +363,15 @@ public class Settings extends AppCompatActivity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (!HardwareKeySourceFilter.isBoardKey(event)) {
+            return true;
+        }
+        if (okHomeKeyHandler.handle(event)) return true;
+        // 实体/红外 MENU 只切换菜单，消费按下和松开，避免焦点控件把它当作确认。
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_3) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                Log.d(TAG, "dispatchKeyEvent: MENU close settings");
+                finish();
+            }
             return true;
         }
         // 只处理按下事件，避免按键抬起阶段重复触发。返回键的抬起事件也必须消费，
@@ -368,10 +468,6 @@ public class Settings extends AppCompatActivity {
                     return true;
                 case KeyEvent.KEYCODE_BUTTON_13:
                     Log.d(TAG, "dispatchKeyEvent: enter right pane");
-                    return true;
-                case KeyEvent.KEYCODE_BUTTON_7:
-                    Log.d(TAG, "dispatchKeyEvent: enter right content");
-                    enterRightContent();
                     return true;
                 default:
                     return super.dispatchKeyEvent(event);

@@ -36,6 +36,8 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private TextView emptyView;
     private GalleryAdapter adapter;
+    private final OkHomeKeyHandler okHomeKeyHandler = new OkHomeKeyHandler(
+            this::openSelectedItem, () -> OkHomeKeyHandler.returnToPreview(this));
 
     private final ActivityResultLauncher<String[]> mediaPermissionLauncher =
             registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
@@ -68,7 +70,14 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onPause() {
+        okHomeKeyHandler.cancel();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        okHomeKeyHandler.cancel();
         if (adapter != null) {
             adapter.release();
         }
@@ -106,7 +115,7 @@ public class GalleryActivity extends AppCompatActivity {
 
     private void loadGalleryItems() {
         List<GalleryItem> items = new ArrayList<>();
-        List<String> removableVolumes = StorageUtils.getMountedRemovableVolumeNames(this);
+        List<String> removableVolumes = StorageUtils.getMountedSdCardVolumeNames(this);
         if (removableVolumes.isEmpty()) {
             Log.w(TAG, "loadGalleryItems: no mounted removable external volumes");
             showItems(items);
@@ -265,6 +274,7 @@ public class GalleryActivity extends AppCompatActivity {
         if (!HardwareKeySourceFilter.isBoardKey(event)) {
             return true;
         }
+        if (okHomeKeyHandler.handle(event)) return true;
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_ESCAPE:
@@ -274,7 +284,6 @@ public class GalleryActivity extends AppCompatActivity {
                     finish();
                     return true;
                 case KeyEvent.KEYCODE_BUTTON_2:
-                case KeyEvent.KEYCODE_BUTTON_7:
                     Log.d(TAG, "dispatchKeyEvent: open selected item");
                     openSelectedItem();
                     return true;

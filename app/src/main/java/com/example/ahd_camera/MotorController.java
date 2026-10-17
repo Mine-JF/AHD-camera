@@ -25,8 +25,10 @@ final class MotorController {
     static final int COMMAND_STOP_FOCUS = 0x0A;
     static final int COMMAND_FOCUS_SPEED_UP = 0x0C;
     static final int COMMAND_FOCUS_SPEED_DOWN = 0x0D;
-    static final int COMMAND_LIGHT_OFF = 0x0F;
-    static final int COMMAND_LIGHT_BRIGHTNESS = 0x10;
+    // 当前单摄方案：由 MCU 同时控制全部补光灯。
+    // 后续双摄可按协议使用 0x11/0x12（前灯）和 0x13/0x14（后灯）。
+    static final int COMMAND_ALL_LIGHT_ON = 0x0E;
+    static final int COMMAND_ALL_LIGHT_OFF = 0x0F;
     static final int LIGHT_MAX_BRIGHTNESS = 10;
 
     private boolean opened;
@@ -78,13 +80,13 @@ final class MotorController {
         }
     }
 
-    /** 设置补光灯：开启时固定发送10档（100%），关闭时发送 CMD_LIGHT_OFF。 */
+    /** 设置全部补光灯：开启时固定发送10档（100%），关闭时发送全部灯关。 */
     boolean setLightEnabled(boolean enabled) {
         if (!start()) {
             return false;
         }
         return V4l2CameraNative.sendMotorCommand(
-                enabled ? COMMAND_LIGHT_BRIGHTNESS : COMMAND_LIGHT_OFF,
+                enabled ? COMMAND_ALL_LIGHT_ON : COMMAND_ALL_LIGHT_OFF,
                 enabled ? LIGHT_MAX_BRIGHTNESS : 0);
     }
 

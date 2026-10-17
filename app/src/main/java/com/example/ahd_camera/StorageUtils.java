@@ -7,6 +7,9 @@ import android.os.storage.StorageVolume;
 import android.provider.MediaStore;
 import android.util.Log;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -29,7 +32,7 @@ final class StorageUtils {
     }
 
     static String getPreferredRemovableVolumeName(Context context) {
-        List<String> volumeNames = getMountedRemovableVolumeNames(context);
+        List<String> volumeNames = getMountedSdCardVolumeNames(context);
         if (volumeNames.isEmpty()) {
             Log.w(TAG, "getPreferredRemovableVolumeName: no removable volume");
             return null;
@@ -37,6 +40,40 @@ final class StorageUtils {
         String volumeName = volumeNames.get(0);
         Log.d(TAG, "getPreferredRemovableVolumeName: volumeName=" + volumeName);
         return volumeName;
+    }
+
+    /** 优先使用 MMC/SD 卡；无法识别底层设备时保留原有可移除存储行为。 */
+    static List<String> getMountedSdCardVolumeNames(Context context) {
+        List<String> volumes = getMountedRemovableVolumeNames(context);
+        if (volumes.size() <= 1) {
+            return volumes;
+        }
+        List<String> sdCards = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader("/proc/mounts"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] fields = line.split(" ");
+                if (fields.length < 2 || !(fields[0].contains("public:179,")
+                        || fields[0].contains("mmcblk"))) {
+                    continue;
+                }
+                for (String volume : volumes) {
+                    if (fields[1].toLowerCase(java.util.Locale.US)
+                            .contains(volume.toLowerCase(java.util.Locale.US))
+                            && !sdCards.contains(volume)) {
+                        sdCards.add(volume);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            Log.w(TAG, "Unable to identify MMC mount; using removable volumes", e);
+        }
+        if (!sdCards.isEmpty()) {
+            Log.i(TAG, "Mounted SD card MediaStore volumes=" + sdCards);
+            return sdCards;
+        }
+        Log.w(TAG, "MMC mount not identified; using mounted removable volumes=" + volumes);
+        return volumes;
     }
 
     static List<String> getMountedRemovableVolumeNames(Context context) {
@@ -69,6 +106,8 @@ final class StorageUtils {
             }
             removableVolumeNames.add(volumeName);
             Log.d(TAG, "getMountedRemovableVolumeNames: add volumeName=" + volumeName
+                    + ", uuid=" + volume.getUuid()
+                    + ", directory=" + volume.getDirectory()
                     + ", description=" + volume.getDescription(context));
         }
         return removableVolumeNames;

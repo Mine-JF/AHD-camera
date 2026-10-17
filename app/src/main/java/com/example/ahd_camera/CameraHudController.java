@@ -77,7 +77,13 @@ final class CameraHudController {
         }
 
         if (distanceView != null) {
-            distanceView.setText(activity.getString(R.string.camera_hud_distance_format, distanceMeters));
+            boolean useFeet = DistanceUnitPreference.usesFeet(activity);
+            float displayedDistance = useFeet ? distanceMeters * 3.28084f : distanceMeters;
+            Log.d(TAG, "distance display: unit=" + (useFeet ? "FT" : "M")
+                    + ", meters=" + distanceMeters + ", displayed=" + displayedDistance);
+            distanceView.setText(activity.getString(useFeet
+                    ? R.string.camera_hud_distance_feet_format
+                    : R.string.camera_hud_distance_format, displayedDistance));
         }
 
         boolean micEnabled = microphoneController.isEnabled();

@@ -4,6 +4,9 @@ plugins {
 
 android {
     namespace 'com.example.ahd_camera'
+    buildFeatures {
+        buildConfig true
+    }
     signingConfigs {
 
         rk356x_keystore {
@@ -33,6 +36,18 @@ android {
             cmake {
                 cppFlags ""
             }
+        }
+    }
+
+    flavorDimensions 'device'
+    productFlavors {
+        board {
+            dimension 'device'
+        }
+        phone {
+            dimension 'device'
+            applicationIdSuffix '.phone'
+            versionNameSuffix '-phone'
         }
     }
 

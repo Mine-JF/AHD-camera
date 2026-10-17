@@ -9,6 +9,7 @@
 <string name="camera_hud_datetime_format">%1$s</string>
 <string name="camera_hud_distance_placeholder">000.0M</string>
 <string name="camera_hud_distance_format">%1$05.1fM</string>
+<string name="camera_hud_distance_feet_format">%1$05.1fFT</string>
 <string name="camera_hud_mic">MIC</string>
 <string name="camera_hud_wifi">WIFI</string>
 <string name="camera_hud_storage">SD</string>

@@ -90,6 +90,19 @@ public final class V4l2CameraNative {
         return result;
     }
 
+    static void setRemoteFrameSource(long handle) {
+        if (AVAILABLE) nativeSetRemoteFrameSource(handle);
+    }
+
+    static void setRemoteFramesEnabled(boolean enabled) {
+        if (AVAILABLE) nativeSetRemoteFramesEnabled(enabled);
+    }
+
+    // Called by the V4L2 capture thread; never touches an Activity or the UI thread.
+    private static void onRemoteFrame(byte[] nv12) {
+        RemoteCameraFrames.offer(nv12);
+    }
+
     public static boolean isPreviewActive(long handle) {
         return AVAILABLE && handle != 0L && nativeIsPreviewActive(handle);
     }
@@ -125,7 +138,7 @@ public final class V4l2CameraNative {
         return opened;
     }
 
-    /** Sends one Motorcontrl_sensor command. The optional level is used by commands 0x05/0x06/0x10. */
+    /** Sends one Motorcontrl_sensor command. Commands 0x05/0x06 and lamp-on commands carry a level. */
     public static boolean sendMotorCommand(int command, int level) {
         if (!AVAILABLE) {
             return false;
@@ -156,22 +169,38 @@ public final class V4l2CameraNative {
         return sent;
     }
 
-    /** Reads the signed DnkCounter value. Returns null when no valid RS485 response is received. */
+    /** Reads a signed DnkCounter active-report frame without sending CMD_QUERY. */
     public static Integer readDistanceCounter() {
         if (!AVAILABLE) {
             return null;
         }
         long value = nativeCounterRead();
         if (value == Long.MIN_VALUE) {
-            Log.w(TAG, "readDistanceCounter failed: " + getLastNativeError());
+            // 主动上报模式下，静止时没有新帧属于正常状态。
             return null;
         }
         return (int) value;
     }
 
+    /**
+     * Returns 1 when the AHD input has a valid signal, 0 when it is unplugged,
+     * and -1 when its status cannot be read.
+     *
+     * The currently deployed ARK7128 driver reports RKMODULE hotplug bits in
+     * the opposite direction, so the native implementation normalizes it here.
+     */
+    public static int getAhdInputPresence(String subDevicePath) {
+        if (!AVAILABLE || subDevicePath == null || subDevicePath.isEmpty()) {
+            return -1;
+        }
+        return nativeGetAhdInputPresence(subDevicePath);
+    }
+
     private static native long nativeOpen(String devicePath, int width, int height, int pixelFormat);
 
     private static native int nativeStartPreview(long handle, Surface surface);
+    private static native void nativeSetRemoteFrameSource(long handle);
+    private static native void nativeSetRemoteFramesEnabled(boolean enabled);
 
     private static native boolean nativeIsPreviewActive(long handle);
 
@@ -190,4 +219,6 @@ public final class V4l2CameraNative {
     private static native boolean nativeCounterReset();
 
     private static native long nativeCounterRead();
+
+    private static native int nativeGetAhdInputPresence(String subDevicePath);
 }

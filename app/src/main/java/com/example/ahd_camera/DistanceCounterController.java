@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
-/** Polls the DnkCounter without blocking the UI thread. */
+/** Receives DnkCounter active-report frames without blocking the UI thread. */
 final class DistanceCounterController {
 
     interface Listener {

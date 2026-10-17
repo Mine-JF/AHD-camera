@@ -25,9 +25,12 @@ public class V4l2CameraController implements CameraPreviewController {
 
     private static final String TAG = "V4l2CameraController";
     private static final int PIXEL_FORMAT_NV12 = 1;
-    private static final int MAX_PREVIEW_WIDTH = 1280;
-    private static final int MAX_PREVIEW_HEIGHT = 720;
-    private static final long TOPOLOGY_POLL_MS = 1000L;
+    private static final int MAX_PREVIEW_WIDTH = 1920;
+    private static final int MAX_PREVIEW_HEIGHT = 1080;
+    // 驱动侧会对状态变化做一次快速复核；应用每 250 ms 取样两次即可在约
+    // 0.5 秒内完成稳定的单/双摄切换，而无需等待原先约 3 秒。
+    private static final long TOPOLOGY_POLL_MS = 250L;
+    private static final int TOPOLOGY_STABLE_POLLS_REQUIRED = 2;
     private static final long UNAVAILABLE_NODE_RETRY_MS = 5_000L;
     private static final String SYSFS_VIDEO4LINUX_DIR = "/sys/class/video4linux";
     private static final String[] EXCLUDED_NODE_NAME_KEYWORDS = {
@@ -39,9 +42,16 @@ public class V4l2CameraController implements CameraPreviewController {
     private static final String PRIMARY_PLATFORM_KEYWORD = "rkcif";
     private static final String SECONDARY_PLATFORM_KEYWORD = "rkisp";
     private static final String MAIN_PATH_KEYWORD = "mainpath";
+    // 媒体拓扑已确认：m01(3-0059) 经 rkcif 输出，m00(3-0058) 经 rkisp mainpath 输出。
+    // /dev/video 编号由现有扫描逻辑决定，不在这里写死。
+    private static final String PRIMARY_AHD_SUBDEV = "/dev/v4l-subdev2"; // m01_b_ark7128
+    private static final String SECONDARY_AHD_SUBDEV = "/dev/v4l-subdev6"; // m00_b_ark7128
 
     private final CameraStatusCallback statusCallback;
     private final Handler mainHandler = new Handler(android.os.Looper.getMainLooper());
+    // 页面启动扫描与后台轮询都可能读取 ARK7128 的分页 I2C 状态寄存器；必须
+    // 串行，避免同一时刻发出两组 subdev ioctl 导致驱动页选择相互干扰。
+    private final Object topologyQueryLock = new Object();
     private final Runnable topologyPollRunnable = new Runnable() {
         @Override
         public void run() {
@@ -56,6 +66,8 @@ public class V4l2CameraController implements CameraPreviewController {
     private Handler cameraHandler;
     private boolean availabilityMonitorRegistered;
     private String[] lastTopology = new String[0];
+    private String[] pendingTopology = new String[0];
+    private int pendingTopologyPollCount;
     private boolean nativeUnavailableLogged;
     // 某些板载摄像头拔出后 /dev/videoX 仍存在。失败节点短暂排除，先恢复
     // 单摄全屏；冷却后自动重试，从而兼顾无信号检测和重新插入恢复。
@@ -88,6 +100,8 @@ public class V4l2CameraController implements CameraPreviewController {
         cameraThread.start();
         cameraHandler = new Handler(cameraThread.getLooper());
         lastTopology = new String[0];
+        pendingTopology = new String[0];
+        pendingTopologyPollCount = 0;
         Log.d(TAG, "startBackgroundThread: thread started");
     }
 
@@ -120,6 +134,8 @@ public class V4l2CameraController implements CameraPreviewController {
         }
         availabilityMonitorRegistered = true;
         lastTopology = getSelectedCameraIds();
+        pendingTopology = new String[0];
+        pendingTopologyPollCount = 0;
         Log.d(TAG, "startAvailabilityMonitor: initial topology=" + Arrays.toString(lastTopology));
         cameraHandler.post(topologyPollRunnable);
     }
@@ -135,12 +151,14 @@ public class V4l2CameraController implements CameraPreviewController {
 
     @Override
     public String[] getSelectedCameraIds() {
-        List<String> selected = selectCameraNodes();
-        int count = Math.min(selected.size(), 2);
-        String[] result = selected.subList(0, count).toArray(new String[0]);
-        Log.d(TAG, "getSelectedCameraIds: selected=" + Arrays.toString(result)
-                + ", candidates=" + selected);
-        return result;
+        synchronized (topologyQueryLock) {
+            List<String> selected = selectCameraNodes();
+            int count = Math.min(selected.size(), 2);
+            String[] result = selected.subList(0, count).toArray(new String[0]);
+            Log.d(TAG, "getSelectedCameraIds: selected=" + Arrays.toString(result)
+                    + ", candidates=" + selected);
+            return result;
+        }
     }
 
     private List<String> selectCameraNodes() {
@@ -188,12 +206,15 @@ public class V4l2CameraController implements CameraPreviewController {
             VideoNodeInfo secondaryNode = choosePlatformNode(
                     platformCandidates, SECONDARY_PLATFORM_KEYWORD, true);
 
-            appendDistinctNode(selected, primaryNode, "primary-rkcif");
-            appendDistinctNode(selected, secondaryNode, "secondary-rkisp-mainpath");
+            appendIfAhdInputPresent(selected, primaryNode, PRIMARY_AHD_SUBDEV, "primary-rkcif");
+            appendIfAhdInputPresent(selected, secondaryNode, SECONDARY_AHD_SUBDEV,
+                    "secondary-rkisp-mainpath");
 
             // 对名称不标准的板级驱动保留单路兜底，但不能把同一 pipeline 下的
             // video1/video2 等节点误认为多台摄像头。
-            if (selected.isEmpty()) {
+            // 仅在无法识别板级角色时才兜底。两个角色均识别但均无信号时，必须
+            // 返回空列表，不能重新把无信号的 video 节点当成单摄打开。
+            if (selected.isEmpty() && primaryNode == null && secondaryNode == null) {
                 platformCandidates.sort(videoNodeOrder(false));
                 appendDistinctNode(selected, platformCandidates.get(0), "platform-fallback");
             }
@@ -253,6 +274,29 @@ public class V4l2CameraController implements CameraPreviewController {
         }
         selected.add(node.devPath);
         Log.i(TAG, "appendDistinctNode: role=" + role + ", node=" + node);
+    }
+
+    private void appendIfAhdInputPresent(
+            List<String> selected, VideoNodeInfo node, String subDevicePath, String role
+    ) {
+        if (node == null) {
+            return;
+        }
+        int presence = V4l2CameraNative.getAhdInputPresence(subDevicePath);
+        if (presence == 0) {
+            Log.i(TAG, "appendIfAhdInputPresent: no AHD signal, role=" + role
+                    + ", subdev=" + subDevicePath + ", node=" + node.devPath);
+            return;
+        }
+        if (presence < 0) {
+            // 查询失败时不要把仍在显示的画面误判为拔出；下一轮轮询会重试。
+            Log.w(TAG, "appendIfAhdInputPresent: status unavailable, keep node, role="
+                    + role + ", subdev=" + subDevicePath);
+        } else {
+            Log.d(TAG, "appendIfAhdInputPresent: AHD signal present, role=" + role
+                    + ", subdev=" + subDevicePath);
+        }
+        appendDistinctNode(selected, node, role);
     }
 
     private VideoNodeInfo readVideoNodeInfo(File sysfsVideoDir) {
@@ -515,6 +559,7 @@ public class V4l2CameraController implements CameraPreviewController {
 
             slot.previewSurface = surface;
             slot.nativeHandle = handle;
+            if (slot == leftSlot) V4l2CameraNative.setRemoteFrameSource(handle);
             surface = null;
             Log.d(TAG, "startPreview success: slot=" + slot.label
                     + ", handle=" + handle + ", devicePath=" + requestedDevicePath);
@@ -548,6 +593,7 @@ public class V4l2CameraController implements CameraPreviewController {
         slot.starting = false;
 
         if (slot.nativeHandle != 0L) {
+            if (slot == leftSlot) V4l2CameraNative.setRemoteFrameSource(0L);
             V4l2CameraNative.stopPreview(slot.nativeHandle);
             V4l2CameraNative.close(slot.nativeHandle);
             slot.nativeHandle = 0L;
@@ -578,15 +624,36 @@ public class V4l2CameraController implements CameraPreviewController {
         String[] topology = getSelectedCameraIds();
         Log.d(TAG, "pollTopology: last=" + Arrays.toString(lastTopology)
                 + ", current=" + Arrays.toString(topology));
-        notifyDisconnectedIfNeeded(leftSlot, topology);
-        notifyDisconnectedIfNeeded(rightSlot, topology);
         notifyStoppedPreviewIfNeeded(leftSlot);
         notifyStoppedPreviewIfNeeded(rightSlot);
-        if (!Arrays.equals(lastTopology, topology)) {
-            lastTopology = topology;
-            Log.i(TAG, "pollTopology: topology changed -> " + Arrays.toString(topology));
-            mainHandler.post(this::notifyTopologyChanged);
+
+        if (Arrays.equals(lastTopology, topology)) {
+            pendingTopology = new String[0];
+            pendingTopologyPollCount = 0;
+            return;
         }
+
+        if (Arrays.equals(pendingTopology, topology)) {
+            pendingTopologyPollCount++;
+        } else {
+            pendingTopology = Arrays.copyOf(topology, topology.length);
+            pendingTopologyPollCount = 1;
+        }
+
+        Log.i(TAG, "pollTopology: pending=" + Arrays.toString(pendingTopology)
+                + ", stablePolls=" + pendingTopologyPollCount + "/"
+                + TOPOLOGY_STABLE_POLLS_REQUIRED);
+        if (pendingTopologyPollCount < TOPOLOGY_STABLE_POLLS_REQUIRED) {
+            return;
+        }
+
+        lastTopology = Arrays.copyOf(pendingTopology, pendingTopology.length);
+        pendingTopology = new String[0];
+        pendingTopologyPollCount = 0;
+        notifyDisconnectedIfNeeded(leftSlot, lastTopology);
+        notifyDisconnectedIfNeeded(rightSlot, lastTopology);
+        Log.i(TAG, "pollTopology: accepted topology -> " + Arrays.toString(lastTopology));
+        mainHandler.post(this::notifyTopologyChanged);
     }
 
     private void notifyStoppedPreviewIfNeeded(PreviewSlot slot) {
@@ -594,12 +661,12 @@ public class V4l2CameraController implements CameraPreviewController {
                 || V4l2CameraNative.isPreviewActive(slot.nativeHandle)) {
             return;
         }
+        // MIPI CRC/帧边界错误也会结束预览线程，但这不代表 AHD 线已拔出。
+        // 物理拔出只由上面的稳定 hotplug 拓扑确认；这里仅做同一拓扑的延迟恢复。
         slot.disconnectReported = true;
-        String disconnectedPath = slot.devicePath;
-        markNodeUnavailable(disconnectedPath);
-        Log.w(TAG, "notifyStoppedPreviewIfNeeded: slot=" + slot.label
-                + ", devicePath=" + disconnectedPath);
-        mainHandler.post(() -> notifyCameraDisconnected(disconnectedPath));
+        Log.w(TAG, "notifyStoppedPreviewIfNeeded: preview stopped without confirmed unplug, slot="
+                + slot.label + ", devicePath=" + slot.devicePath);
+        mainHandler.postDelayed(this::notifyTopologyChanged, 1500L);
     }
 
     private void markNodeUnavailable(String devicePath) {

@@ -30,16 +30,36 @@
 #include <termios.h>
 #include <unistd.h>
 
+#ifndef BASE_VIDIOC_PRIVATE
+#define BASE_VIDIOC_PRIVATE 192
+#endif
+
 namespace {
 
 constexpr const char* kTag = "ahd_v4l2_jni";
 constexpr uint32_t kDefaultBufferCount = 4;
 constexpr int kPollTimeoutMs = 1500;
 constexpr uint32_t kTargetFps = 30;
+constexpr int kRemoteWidth = 640;
+constexpr int kRemoteHeight = 360;
+std::atomic<void*> gRemoteFrameSource{nullptr};
+std::atomic<bool> gRemoteFramesEnabled{false};
+JavaVM* gRemoteVm = nullptr;
+jclass gRemoteNativeClass = nullptr;
+jmethodID gRemoteFrameMethod = nullptr;
 
 enum PixelFormat : jint {
     PIXEL_FORMAT_NV12 = 1,
 };
+
+// Keep this ABI definition local because the Android NDK does not ship the
+// Rockchip-specific rk-camera-module.h header used by the board kernel.
+struct RkmoduleVcHotplugInfo {
+    uint8_t detect_status;
+} __attribute__((packed));
+
+constexpr unsigned long kRkmoduleGetVcHotplugInfo =
+        _IOR('V', BASE_VIDIOC_PRIVATE + 13, RkmoduleVcHotplugInfo);
 
 constexpr int kRgaFormatRgba8888 = 0x0 << 8;
 constexpr int kRgaFormatNv16 = 0x8 << 8;
@@ -81,6 +101,10 @@ struct CameraContext {
     bool previewStarted = false;
     std::vector<MappedBuffer> buffers;
     std::vector<uint8_t> rgbaBuffer;
+    std::vector<uint8_t> remoteNv12Buffer;
+    uint32_t remotePublishedFrames = 0;
+    uint32_t remoteResizeFailures = 0;
+    bool remoteFormatWarningLogged = false;
     ANativeWindow* window = nullptr;
     std::thread previewThread;
     std::atomic<bool> stopRequested{false};
@@ -227,13 +251,16 @@ bool ConfigureMotorSerial(int fd) {
         return false;
     }
     cfmakeraw(&settings);
-    if (cfsetispeed(&settings, B115200) == -1 || cfsetospeed(&settings, B115200) == -1) {
-        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 115200 baud"));
+    if (cfsetispeed(&settings, B9600) == -1 || cfsetospeed(&settings, B9600) == -1) {
+        SetLastError(ErrnoMessage("Unable to set /dev/ttyS3 to 9600 baud"));
         return false;
     }
     settings.c_cflag |= static_cast<tcflag_t>(CLOCAL | CREAD);
     settings.c_cflag &= static_cast<tcflag_t>(~(PARENB | CSTOPB | CSIZE));
     settings.c_cflag |= CS8;
+    // Android/toybox 的 raw 设置在部分系统上仍可能保留 ICRNL；必须显式关闭，
+    // 否则计米器帧尾的 0x0D 会在接收时被翻译成 0x0A，校验帧尾失败。
+    settings.c_iflag &= static_cast<tcflag_t>(~(ICRNL | INLCR | IGNCR | IXON | IXOFF));
     settings.c_cc[VMIN] = 0;
     settings.c_cc[VTIME] = 0;
     if (tcsetattr(fd, TCSANOW, &settings) == -1) {
@@ -248,9 +275,11 @@ bool SendSerialCommandLocked(uint8_t deviceId, uint8_t command, uint8_t level) {
         SetLastError("Motor serial port is not open");
         return false;
     }
-    // 0x05/0x06 是 VCM 档位，0x10 是补光灯亮度；这三条命令帧需要携带 1 字节数据。
+    // 0x05/0x06 是 VCM 档位，0x0e 是全部补光灯开启；这些命令帧需要携带 1 字节数据。
     const bool hasLevel = deviceId == 0x01
-            && (command == 0x05 || command == 0x06 || command == 0x10);
+            && (command == 0x05 || command == 0x06 || command == 0x0e)
+
+            ;
     const uint8_t length = hasLevel ? 1 : 0;
     const uint8_t sequence = gMotorSequence++;
     uint8_t checksum = static_cast<uint8_t>(deviceId ^ sequence ^ command ^ length);
@@ -285,7 +314,7 @@ bool SendSerialCommandLocked(uint8_t deviceId, uint8_t command, uint8_t level) {
     return true;
 }
 
-bool ReadCounterValueLocked(uint8_t expectedSequence, int32_t* counterValue) {
+bool ReadCounterValueLocked(int32_t* counterValue) {
     if (gMotorFd < 0 || counterValue == nullptr) {
         SetLastError("Counter serial port is not open");
         return false;
@@ -350,14 +379,11 @@ bool ReadCounterValueLocked(uint8_t expectedSequence, int32_t* counterValue) {
             }
 
             const uint8_t deviceId = received[2];
-            const uint8_t sequence = received[3];
             const uint8_t command = received[4];
             const uint8_t length = received[5];
             const bool activeReport = deviceId == 0x02 && command == 0x01 && length == 4;
-            const bool queryResponse = deviceId == 0x02 && sequence == expectedSequence
-                    && command == 0x81 && length == 6 && received[6] == 0x01 && received[7] == 0x00;
-            if (activeReport || queryResponse) {
-                const size_t valueIndex = activeReport ? 6 : 8;
+            if (activeReport) {
+                const size_t valueIndex = 6;
                 const uint32_t unsignedValue = (static_cast<uint32_t>(received[valueIndex]) << 24)
                         | (static_cast<uint32_t>(received[valueIndex + 1]) << 16)
                         | (static_cast<uint32_t>(received[valueIndex + 2]) << 8)
@@ -455,6 +481,60 @@ bool RenderFrame(CameraContext* context, const MappedBuffer& mapped, size_t byte
     }
 
     return CopyRgbToWindow(context->rgbaBuffer.data(), width, height, context->window);
+}
+
+void PublishRemoteFrame(CameraContext* context, const MappedBuffer& mapped, size_t bytesUsed) {
+    if (!gRemoteFramesEnabled.load() || gRemoteFrameSource.load() != context
+            || mapped.dmaFd < 0
+            || gRemoteVm == nullptr || gRemoteNativeClass == nullptr || gRemoteFrameMethod == nullptr) {
+        return;
+    }
+    if (context->pixelFormat != V4L2_PIX_FMT_NV12) {
+        if (!context->remoteFormatWarningLogged) {
+            LogPrint(ANDROID_LOG_WARN, "Remote direct frames need NV12; actual format=%08x for %s",
+                    context->pixelFormat, context->devicePath.c_str());
+            context->remoteFormatWarningLogged = true;
+        }
+        return;
+    }
+    if (bytesUsed < static_cast<size_t>(context->sizeImage)) return;
+    const size_t frameSize = kRemoteWidth * kRemoteHeight * 3 / 2;
+    if (context->remoteNv12Buffer.size() != frameSize) {
+        context->remoteNv12Buffer.resize(frameSize);
+    }
+    const int stride = context->bytesPerLine == 0 ? static_cast<int>(context->width)
+            : static_cast<int>(context->bytesPerLine);
+    rga_buffer_t src = wrapbuffer_fd_t(mapped.dmaFd, context->width, context->height,
+            stride, context->height, kRgaFormatNv12);
+    rga_buffer_t dst = wrapbuffer_virtualaddr_t(context->remoteNv12Buffer.data(),
+            kRemoteWidth, kRemoteHeight, kRemoteWidth, kRemoteHeight, kRgaFormatNv12);
+    const IM_STATUS resizeStatus = imresize(src, dst);
+    if (resizeStatus != IM_STATUS_SUCCESS) {
+        if (++context->remoteResizeFailures == 1 || context->remoteResizeFailures % 100 == 0) {
+            LogPrint(ANDROID_LOG_WARN, "Remote NV12 resize failed: status=%d msg=%s count=%u",
+                    resizeStatus, imStrError(resizeStatus), context->remoteResizeFailures);
+        }
+        return;
+    }
+
+    JNIEnv* env = nullptr;
+    if (gRemoteVm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    jbyteArray bytes = env->NewByteArray(frameSize);
+    if (bytes != nullptr) {
+        env->SetByteArrayRegion(bytes, 0, frameSize,
+                reinterpret_cast<const jbyte*>(context->remoteNv12Buffer.data()));
+        env->CallStaticVoidMethod(gRemoteNativeClass, gRemoteFrameMethod, bytes);
+        env->DeleteLocalRef(bytes);
+        if (++context->remotePublishedFrames == 1 || context->remotePublishedFrames % 150 == 0) {
+            LogPrint(ANDROID_LOG_INFO, "Remote raw frames published=%u source=%s",
+                    context->remotePublishedFrames, context->devicePath.c_str());
+        }
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+    gRemoteVm->DetachCurrentThread();
 }
 
 bool QueueAllBuffers(CameraContext* context) {
@@ -557,6 +637,7 @@ void PreviewLoop(CameraContext* context) {
             const size_t bytesUsed = context->bufferType == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE
                     ? static_cast<size_t>(buffer.m.planes[0].bytesused)
                     : static_cast<size_t>(buffer.bytesused);
+            PublishRemoteFrame(context, mapped, std::min(bytesUsed, mapped.length));
             if (!RenderFrame(context, mapped, std::min(bytesUsed, mapped.length))) {
                 LogPrint(ANDROID_LOG_WARN,
                         "RenderFrame failed: index=%u bytesUsed=%zu mapped=%zu format=%08x",
@@ -863,6 +944,25 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeStartPreview(
     return 0;
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeSetRemoteFrameSource(
+        JNIEnv* env, jclass clazz, jlong handle) {
+    gRemoteFrameSource.store(FromHandle(handle));
+    LogPrint(ANDROID_LOG_INFO, "Remote frame source handle=%p", FromHandle(handle));
+    if (gRemoteNativeClass == nullptr) {
+        env->GetJavaVM(&gRemoteVm);
+        gRemoteNativeClass = static_cast<jclass>(env->NewGlobalRef(clazz));
+        gRemoteFrameMethod = env->GetStaticMethodID(clazz, "onRemoteFrame", "([B)V");
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeSetRemoteFramesEnabled(
+        JNIEnv* /* env */, jclass /* clazz */, jboolean enabled) {
+    gRemoteFramesEnabled.store(enabled == JNI_TRUE);
+    LogPrint(ANDROID_LOG_INFO, "Remote direct frames enabled=%d", enabled == JNI_TRUE);
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_ahd_1camera_V4l2CameraNative_nativeIsPreviewActive(
         JNIEnv* /* env */,
@@ -923,6 +1023,43 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeGetLastError(
     return env->NewStringUTF(error.c_str());
 }
 
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_ahd_1camera_V4l2CameraNative_nativeGetAhdInputPresence(
+        JNIEnv* env,
+        jclass /* clazz */,
+        jstring subDevicePath) {
+    const std::string path = JStringToUtf8(env, subDevicePath);
+    if (path.empty()) {
+        return -1;
+    }
+
+    const int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
+    if (fd < 0) {
+        LogPrint(ANDROID_LOG_WARN, "open hotplug subdev %s failed: %s",
+                path.c_str(), strerror(errno));
+        return -1;
+    }
+
+    RkmoduleVcHotplugInfo info{};
+    const int result = IoctlRetry(fd, kRkmoduleGetVcHotplugInfo, &info);
+    const int savedErrno = errno;
+    close(fd);
+    if (result != 0) {
+        LogPrint(ANDROID_LOG_WARN, "RKMODULE_GET_VC_HOTPLUG_INFO failed for %s: %s",
+                path.c_str(), strerror(savedErrno));
+        return -1;
+    }
+
+    const bool driverReportsPlugged = (info.detect_status & 0x01u) != 0;
+    // The ARK7128 driver follows rkmodule_vc_hotplug_info's documented ABI:
+    // bit 0 is 1 for a valid AHD input and 0 for no input.
+    const jint normalizedPresence = driverReportsPlugged ? 1 : 0;
+    LogPrint(ANDROID_LOG_INFO,
+            "AHD hotplug: subdev=%s raw_detect_status=0x%02x normalized_presence=%d",
+            path.c_str(), info.detect_status, normalizedPresence);
+    return normalizedPresence;
+}
+
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
         JNIEnv* env,
@@ -949,7 +1086,7 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
         return JNI_FALSE;
     }
     gMotorSequence = 0;
-    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 115200 8N1", path.c_str());
+    LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 9600 8N1", path.c_str());
     return JNI_TRUE;
 }
 
@@ -959,9 +1096,9 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorSend(
         jclass /* clazz */,
         jint command,
         jint level) {
-    // 0x0E 未定义；补光灯命令 0x0F/0x10 必须显式放行。
+    // 0x0e/0x0f 分别为全部补光灯开/关。
     const bool validCommand = (command >= 0x01 && command <= 0x0d)
-            || command == 0x0f || command == 0x10;
+            || command == 0x0e || command == 0x0f;
     if (!validCommand || level < 0 || level > 10) {
         SetLastError("Invalid motor command or level");
         return JNI_FALSE;
@@ -984,12 +1121,9 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeCounterRead(
         JNIEnv* /* env */,
         jclass /* clazz */) {
     std::lock_guard<std::mutex> lock(gMotorMutex);
-    const uint8_t sequence = gMotorSequence;
-    if (!SendSerialCommandLocked(0x02, 0x01, 0)) {
-        return std::numeric_limits<jlong>::min();
-    }
+    // DnkCounter 在计数变化时自行发送 13 字节主动上报帧，此处只接收、绝不查询。
     int32_t counterValue = 0;
-    if (!ReadCounterValueLocked(sequence, &counterValue)) {
+    if (!ReadCounterValueLocked(&counterValue)) {
         return std::numeric_limits<jlong>::min();
     }
     return static_cast<jlong>(counterValue);

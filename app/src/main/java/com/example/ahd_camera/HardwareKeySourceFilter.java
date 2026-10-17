@@ -6,7 +6,7 @@ import android.view.KeyEvent;
 
 /**
  * 板载按键来源过滤器。
- * 只允许设备树创建的 gpio-keys 与 adc-keys 触发 APK 的硬件快捷键，
+ * 只允许板载 GPIO、ADC 按键和指定的板载红外接收器触发 APK 的硬件快捷键，
  * 防止外接 USB/2.4G 键盘发送相同 KEY_* 键值时误操作设备。
  */
 public final class HardwareKeySourceFilter {
@@ -14,19 +14,20 @@ public final class HardwareKeySourceFilter {
     private static final String TAG = "HardwareKeySource";
     private static final String GPIO_KEYS_DEVICE_NAME = "gpio-keys";
     private static final String ADC_KEYS_DEVICE_NAME = "adc-keys";
+    private static final String IR_DEVICE_NAME = "fe700030.pwm";
+    private static final int IR_VENDOR_ID = 0x524b;
+    private static final int IR_PRODUCT_ID = 0x0006;
 
     private HardwareKeySourceFilter() {
     }
 
     /**
-     * 判断事件是否来自板载 GPIO 或 ADC 按键。
+     * 判断事件是否来自板载 GPIO、ADC 按键或指定红外接收器。
      * 不使用 /dev/input/eventX 编号，因为插拔 USB 设备后编号会改变；使用 InputDevice 名称更稳定。
      */
     public static boolean isBoardKey(KeyEvent event) {
         InputDevice device = InputDevice.getDevice(event.getDeviceId());
-        String deviceName = device != null ? device.getName() : null;
-        boolean accepted = GPIO_KEYS_DEVICE_NAME.equals(deviceName)
-                || ADC_KEYS_DEVICE_NAME.equals(deviceName);
+        boolean accepted = device != null && isBoardDevice(device);
 
         if (!accepted && event.getAction() == KeyEvent.ACTION_DOWN
                 && event.getRepeatCount() == 0) {
@@ -52,7 +53,11 @@ public final class HardwareKeySourceFilter {
 
     private static boolean isBoardDevice(InputDevice device) {
         String deviceName = device.getName();
-        return GPIO_KEYS_DEVICE_NAME.equals(deviceName) || ADC_KEYS_DEVICE_NAME.equals(deviceName);
+        return GPIO_KEYS_DEVICE_NAME.equals(deviceName)
+                || ADC_KEYS_DEVICE_NAME.equals(deviceName)
+                || (IR_DEVICE_NAME.equals(deviceName)
+                && device.getVendorId() == IR_VENDOR_ID
+                && device.getProductId() == IR_PRODUCT_ID);
     }
 
     private static String describeDevice(KeyEvent event, InputDevice device) {

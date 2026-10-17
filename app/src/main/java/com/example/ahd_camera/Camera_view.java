@@ -43,10 +43,10 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     // 1档和2档都低于 VCM 始动电流，将两档合并进起步过程并直接从首个有效的3档开始。
     private static final int VCM_MIN_LEVEL = 3;
     private static final int VCM_MAX_LEVEL = 10;
-    // 摇杆保持拨动时快速连续扫档。较短的启动等待保留轻拨单档能力，
-    // 之后约每 35ms 更新一次 PWM，利用 VCM 自身惯性减弱十档之间的跳变感。
-    private static final long VCM_CONTINUOUS_START_DELAY_MS = 55L;
-    private static final long VCM_CONTINUOUS_STEP_INTERVAL_MS = 35L;
+    // 摇杆保持拨动时逐档调焦。首档先等待一小段时间，短拨仍可精确微调一档；
+    // 之后每 120ms 更新一档，3~10 档完整过渡约一秒，避免焦距变化过快。
+    private static final long VCM_CONTINUOUS_START_DELAY_MS = 180L;
+    private static final long VCM_CONTINUOUS_STEP_INTERVAL_MS = 120L;
     // DnkCounter protocol reports signed steps. Adjust this after wheel calibration if needed.
     private static final float METERS_PER_COUNTER_STEP = 1.0f;
     public static final String ACTION_DISTANCE_UPDATE = "com.example.ahd_camera.action.DISTANCE_UPDATE";
@@ -65,6 +65,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private PhotoCaptureController photoCaptureController;
     private VideoRecorderController videoRecorderController;
     private MotorController motorController;
+    private boolean remoteMenuOpen;
     private DistanceCounterController distanceCounterController;
     private String[] lastSelectedCameraIds = new String[0];
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -205,8 +206,11 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     @Override
     protected void onResume() {
         super.onResume();
+        ((BoardRemoteApplication) getApplication()).bindActivity(this);
         android.util.Log.d(TAG, "onResume: start camera flow");
         Utils.hideSystemUI(getWindow());
+        // Settings can change the display unit while this Activity is paused.
+        hudController.refresh();
         focusHardwareKeyboardEditor();
         if (!distanceReceiverRegistered) {
             registerReceiver(distanceReceiver, new IntentFilter(ACTION_DISTANCE_UPDATE));
@@ -216,6 +220,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         if (!nativeBackendAvailable) {
             android.util.Log.e(TAG, "onResume: skip camera flow because native backend is unavailable: "
                     + nativeBackendSummary);
+            android.util.Log.e(TAG, "onResume: remote LAN server not started");
             showBlackPreview();
             showStatus(getString(R.string.camera_native_library_missing));
             mainHandler.removeCallbacks(hudRefreshRunnable);
@@ -228,6 +233,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         cameraController.startBackgroundThread();
         ensureCameraPermissionAndStart();
         cameraController.startAvailabilityMonitor();
+        remoteMenuOpen = false;
     }
 
     // 页面离开前台时释放摄像头，避免资源占用和重复打开。
@@ -260,11 +266,95 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         super.onPause();
     }
 
+    void handleRemoteCommand(String command) {
+        android.util.Log.i(TAG, "handleRemoteCommand: " + command);
+        if (remoteMenuOpen && (command.equals("OK") || command.equals("HOME")
+                || command.equals("BACK") || command.equals("BACK_LONG")
+                || command.startsWith("UP_") || command.startsWith("DOWN_")
+                || command.startsWith("LEFT_") || command.startsWith("RIGHT_"))) {
+            com.example.Settings.Settings.dispatchRemoteCommand(command);
+            return;
+        }
+        if (remoteMenuOpen && !command.equals("MENU") && !command.equals("STOP_ALL")) {
+            // Board hardware shortcuts do not control the preview while Settings is foreground.
+            return;
+        }
+        switch (command) {
+            case "UP_DOWN": motorController.move(MotorController.COMMAND_UP); break;
+            case "UP_UP": motorController.stopForMove(MotorController.COMMAND_UP); break;
+            case "DOWN_DOWN": motorController.move(MotorController.COMMAND_DOWN); break;
+            case "DOWN_UP": motorController.stopForMove(MotorController.COMMAND_DOWN); break;
+            case "LEFT_DOWN": motorController.move(MotorController.COMMAND_LEFT); break;
+            case "LEFT_UP": motorController.stopForMove(MotorController.COMMAND_LEFT); break;
+            case "RIGHT_DOWN": motorController.move(MotorController.COMMAND_RIGHT); break;
+            case "RIGHT_UP": motorController.stopForMove(MotorController.COMMAND_RIGHT); break;
+            case "FOCUS_PLUS_DOWN":
+                startContinuousFocusAdjustment(KeyEvent.KEYCODE_BUTTON_C, 1);
+                break;
+            case "FOCUS_MINUS_DOWN":
+                startContinuousFocusAdjustment(KeyEvent.KEYCODE_BUTTON_Y, -1);
+                break;
+            case "FOCUS_PLUS_UP":
+            case "FOCUS_MINUS_UP":
+                stopContinuousFocusAdjustment();
+                break;
+            case "RESET_DISTANCE":
+                if (motorController.resetDistanceCounter()) {
+                    hudController.setDistanceMeters(0.0f);
+                    hudController.refresh();
+                    showStatus("计米已清零");
+                }
+                break;
+            case "LIGHT":
+                boolean nextLightEnabled = !lightEnabled;
+                if (motorController.setLightEnabled(nextLightEnabled)) {
+                    lightEnabled = nextLightEnabled;
+                    showStatus(nextLightEnabled ? "补光灯：最亮" : "补光灯：关闭");
+                }
+                break;
+            case "PHOTO": capturePhoto(); break;
+            case "RECORD": toggleVideoRecording(); break;
+            case "MENU":
+                if (remoteMenuOpen) {
+                    android.util.Log.i(TAG, "remote MENU: return from Settings to preview");
+                    Intent backToPreview = new Intent(this, Camera_view.class);
+                    backToPreview.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                    startActivity(backToPreview);
+                } else {
+                    android.util.Log.i(TAG, "remote MENU: open Settings and retain connection");
+                    stopContinuousFocusAdjustment();
+                    remoteMenuOpen = true;
+                    openSettings();
+                }
+                break;
+            case "OK":
+                // OK only confirms selections on pages that have selectable content.
+                // The preview page has nothing to confirm; never use OK as a shutter key.
+                break;
+            case "HOME": case "BACK":
+                // The preview page is already home; a short back press does not exit it.
+                break;
+            case "BACK_LONG":
+                microphoneController.setEnabled(!microphoneController.isEnabled());
+                hudController.refresh();
+                break;
+            case "ROTATE": rotatePreviewClockwise(); break;
+            case "STOP_ALL":
+                stopContinuousFocusAdjustment();
+                motorController.stopAndClose();
+                focusLevel = 0;
+                break;
+            default: android.util.Log.w(TAG, "Unknown remote command: " + command);
+        }
+    }
+
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         android.util.Log.d(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus);
         if (hasFocus) {
+            ((BoardRemoteApplication) getApplication()).bindActivity(this);
             Utils.hideSystemUI(getWindow());
             focusHardwareKeyboardEditor();
         }
@@ -436,8 +526,26 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
                 return true;
             }
         }
+        // MENU 的 DOWN/UP 都由页面消费，不能把 UP 交给当前焦点当作确认键。
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_3) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) openSettings();
+            return true;
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_7) {
+            // OK has no confirmation target on preview; consume both DOWN and UP.
+            return true;
+        }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_Z) {
             return handleBackKey(event);
+        }
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_L1) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                boolean useFeet = !DistanceUnitPreference.usesFeet(this);
+                DistanceUnitPreference.setUsesFeet(this, useFeet);
+                hudController.refresh();
+                android.util.Log.i(TAG, "distance unit switched to " + (useFeet ? "ft" : "m"));
+            }
+            return true;
         }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_4) {
             if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
@@ -481,16 +589,11 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         }
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             switch (event.getKeyCode()) {
-                case KeyEvent.KEYCODE_BUTTON_3:
-                    android.util.Log.d(TAG, "dispatchKeyEvent: open settings");
-                    openSettings();
-                    return true;
                 case KeyEvent.KEYCODE_BUTTON_1:
                     android.util.Log.d(TAG, "dispatchKeyEvent: open gallery");
                     startActivity(new Intent(this, GalleryActivity.class));
                     return true;
                 case KeyEvent.KEYCODE_BUTTON_5:
-                case KeyEvent.KEYCODE_BUTTON_7:
                     android.util.Log.d(TAG, "dispatchKeyEvent: capture photo");
                     capturePhoto();
                     return true;
