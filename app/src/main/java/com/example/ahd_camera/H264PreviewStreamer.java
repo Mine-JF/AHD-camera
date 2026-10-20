@@ -12,6 +12,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.Socket;
 import java.util.function.Supplier;
+import java.util.function.IntSupplier;
 import java.nio.ByteBuffer;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -23,16 +24,20 @@ final class H264PreviewStreamer {
     static final int MAGIC = 0x41484431; // AHD1
     static final int WIDTH = 640;
     static final int HEIGHT = 360;
+    static final int ROTATION_MARKER = 0x41484452; // AHDR; zero-length packet carries degrees in pts field.
     private static final int FPS = 30;
 
     private final Handler mainHandler;
     private final Supplier<View> previewRoot;
     private final Supplier<View> overlay;
+    private final IntSupplier previewRotation;
 
-    H264PreviewStreamer(Handler mainHandler, Supplier<View> previewRoot, Supplier<View> overlay) {
+    H264PreviewStreamer(Handler mainHandler, Supplier<View> previewRoot, Supplier<View> overlay,
+            IntSupplier previewRotation) {
         this.mainHandler = mainHandler;
         this.previewRoot = previewRoot;
         this.overlay = overlay;
+        this.previewRotation = previewRotation;
     }
 
     void stream(Socket socket, AtomicBoolean running, AtomicBoolean paused) throws IOException {
@@ -66,6 +71,7 @@ final class H264PreviewStreamer {
             long statsStartMs = android.os.SystemClock.elapsedRealtime();
             int directFrames = 0;
             int captureFrames = 0;
+            int lastSentRotation = -1;
             RemoteCameraFrames.setActive(true);
             frameSourceActive = true;
             while (running.get() && !socket.isClosed()) {
@@ -79,6 +85,16 @@ final class H264PreviewStreamer {
                 }
                 RemoteCameraFrames.Frame direct = null;
                 View root = previewRoot.get();
+                int rotation = root != null && root.getId() == R.id.camera_container
+                        ? previewRotation.getAsInt() : 0;
+                if (rotation != lastSentRotation) {
+                    output.writeInt(0);
+                    output.writeInt(ROTATION_MARKER);
+                    output.writeLong(rotation);
+                    output.flush();
+                    lastSentRotation = rotation;
+                    Log.i(TAG, "stream rotation=" + rotation);
+                }
                 if (root != null && root.getId() == R.id.camera_container) {
                     try {
                         direct = RemoteCameraFrames.waitForNext(lastSequence, 80);

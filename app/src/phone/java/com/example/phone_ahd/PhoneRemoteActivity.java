@@ -1,10 +1,12 @@
 package com.example.phone_ahd;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.method.ScrollingMovementMethod;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.TextureView;
 import android.view.View;
@@ -16,11 +18,15 @@ import com.example.ahd_camera.R;
 /** Orientation-adaptive phone remote: live board preview and touch controls. */
 public final class PhoneRemoteActivity extends Activity {
     private static final String STATE_RECONNECT_HOST = "reconnect_host";
+    private static final String TAG = "PhoneRemoteActivity";
     private PhoneRemoteClient client;
+    private PhoneBoardDiscovery discovery;
+    private EditText boardIp;
     private TextView status;
     private String lastRequestedHost;
     private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
     private boolean started;
+    private int searchNumber;
     private final Runnable reconnectRunnable = () -> {
         if (started && lastRequestedHost != null && !client.isRunning()) {
             status.setText("正在重新连接 " + lastRequestedHost);
@@ -36,11 +42,15 @@ public final class PhoneRemoteActivity extends Activity {
                         | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
         setContentView(R.layout.activity_phone_remote);
 
-        EditText ip = findViewById(R.id.phone_board_ip);
+        boardIp = findViewById(R.id.phone_board_ip);
         status = findViewById(R.id.phone_connection_status);
         status.setMovementMethod(new ScrollingMovementMethod());
         TextureView preview = findViewById(R.id.phone_preview);
-        ip.setText(getPreferences(0).getString("board_ip", "192.168.0.100"));
+        String savedHost = getPreferences(0).getString("board_ip", "").trim();
+        boardIp.setText(savedHost);
+        if (!savedHost.isEmpty()) lastRequestedHost = savedHost;
+        Log.i(TAG, "created: savedHost=" + savedHost + ", restored=" + (state != null));
+        discovery = new PhoneBoardDiscovery(this);
         client = new PhoneRemoteClient(preview, text -> {
             status.setText(text);
             if (text.startsWith("已连接") || text.startsWith("控制已连接")) {
@@ -53,16 +63,15 @@ public final class PhoneRemoteActivity extends Activity {
         });
 
         findViewById(R.id.phone_connect).setOnClickListener(v -> {
-            String host = ip.getText().toString().trim();
+            String host = boardIp.getText().toString().trim();
             if (host.isEmpty()) {
                 status.setText("请填写主板 IP");
                 return;
             }
-            getPreferences(0).edit().putString("board_ip", host).apply();
-            status.setText("正在连接 " + host);
-            lastRequestedHost = host;
-            client.connect(host);
+            discovery.cancel();
+            connectToHost(host);
         });
+        findViewById(R.id.phone_discover).setOnClickListener(v -> startDiscovery());
 
         bindHoldButton(R.id.phone_up, "UP");
         bindHoldButton(R.id.phone_down, "DOWN");
@@ -86,7 +95,6 @@ public final class PhoneRemoteActivity extends Activity {
             if (reconnectHost != null && !reconnectHost.isEmpty()) {
                 lastRequestedHost = reconnectHost;
                 status.setText("屏幕旋转，正在重新连接 " + reconnectHost);
-                preview.post(() -> client.connect(reconnectHost));
             }
         }
     }
@@ -97,11 +105,55 @@ public final class PhoneRemoteActivity extends Activity {
         reconnectHandler.postDelayed(reconnectRunnable, 2_000);
     }
 
+    private void connectToHost(String host) {
+        Log.i(TAG, "connectToHost: " + host);
+        boardIp.setText(host);
+        getPreferences(0).edit().putString("board_ip", host).apply();
+        status.setText("正在连接 " + host);
+        lastRequestedHost = host;
+        reconnectHandler.removeCallbacks(reconnectRunnable);
+        client.connect(host);
+    }
+
+    private void startDiscovery() {
+        int request = ++searchNumber;
+        Log.i(TAG, "search start #" + request + ", connected=" + client.isRunning()
+                + ", lastHost=" + lastRequestedHost);
+        status.setText("正在搜索同一局域网中的 AHD 主板…");
+        discovery.discover(boards -> {
+            Log.i(TAG, "search result #" + request + ": count=" + boards.size()
+                    + ", started=" + started + ", currentSearch=" + searchNumber);
+            if (!started || request != searchNumber) return;
+            if (boards.isEmpty()) {
+                status.setText("未发现主板；当前连接不受影响，可手动输入 IP");
+            } else if (boards.size() == 1) {
+                PhoneBoardDiscovery.Board board = boards.get(0);
+                if (client.isRunning() && board.host.equals(lastRequestedHost)) {
+                    status.setText("已连接 " + board.name + " (" + board.host + ")");
+                } else {
+                    status.setText("发现 " + board.name + "，正在连接…");
+                    connectToHost(board.host);
+                }
+            } else {
+                String[] labels = new String[boards.size()];
+                for (int i = 0; i < boards.size(); i++) labels[i] = boards.get(i).toString();
+                status.setText("发现 " + boards.size() + " 台主板，请选择");
+                new AlertDialog.Builder(this).setTitle("选择 AHD 主板")
+                        .setItems(labels, (dialog, which) -> connectToHost(boards.get(which).host))
+                        .setNegativeButton("取消", null).show();
+            }
+        });
+    }
+
     @Override
     protected void onStart() {
         super.onStart();
         started = true;
-        if (client != null && !client.isRunning()) scheduleReconnect();
+        Log.i(TAG, "onStart: lastHost=" + lastRequestedHost + ", running=" + client.isRunning());
+        if (client != null && !client.isRunning()) {
+            if (lastRequestedHost == null) startDiscovery();
+            else connectToHost(lastRequestedHost);
+        }
     }
 
     @Override
@@ -177,6 +229,9 @@ public final class PhoneRemoteActivity extends Activity {
     @Override
     protected void onStop() {
         started = false;
+        searchNumber++;
+        Log.i(TAG, "onStop: cancel search and disconnect");
+        discovery.cancel();
         reconnectHandler.removeCallbacks(reconnectRunnable);
         client.disconnect();
         super.onStop();

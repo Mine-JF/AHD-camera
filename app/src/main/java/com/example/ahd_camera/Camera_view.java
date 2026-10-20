@@ -36,7 +36,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private static final String TAG = "Camera_view";
     private static final long BACK_KEY_MIC_LONG_PRESS_MS = 2_000L;
     private static final long BOARD_KEY_DEBOUNCE_MS = 120L;
-    private static final long STATUS_MESSAGE_DURATION_MS = 2_000L;
+    private static final long STATUS_MESSAGE_DURATION_MS = 1_000L;
     // 顶部 HUD（日期、时间、状态图标）占用区域；输入编辑器不能覆盖该区域。
     private static final int INPUT_EDITOR_TOP_CLEARANCE_DP = 76;
     private static final int INPUT_EDITOR_BOTTOM_CLEARANCE_DP = 20;
@@ -591,7 +591,11 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_BUTTON_1:
                     android.util.Log.d(TAG, "dispatchKeyEvent: open gallery");
-                    startActivity(new Intent(this, GalleryActivity.class));
+                    if (StorageUtils.hasMountedRemovableStorage(this)) {
+                        startActivity(new Intent(this, GalleryActivity.class));
+                    } else {
+                        showStatus(getString(R.string.storage_insert_usb));
+                    }
                     return true;
                 case KeyEvent.KEYCODE_BUTTON_5:
                     android.util.Log.d(TAG, "dispatchKeyEvent: capture photo");
@@ -824,11 +828,16 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     // 按一次顺时针旋转 90 度，预览、拍照、录像都会沿用同一角度。
     private void rotatePreviewClockwise() {
         previewRotationDegrees = (previewRotationDegrees + 90) % 360;
+        ((BoardRemoteApplication) getApplication()).setPreviewRotation(previewRotationDegrees);
         android.util.Log.i(TAG, "rotatePreviewClockwise: previewRotationDegrees=" + previewRotationDegrees);
         runOnUiThread(() -> {
             applyPreviewRotation();
             showStatus("画面旋转 " + previewRotationDegrees + "°");
         });
+    }
+
+    int getPreviewRotationDegrees() {
+        return previewRotationDegrees;
     }
 
     private void applyPreviewRotation() {
@@ -852,7 +861,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
     // 使用当前预览画面抓拍一张 JPEG，并写入系统图片库。
     private void capturePhoto() {
-        if (!StorageUtils.hasMountedRemovableStorage(this)) {
+        if (!StorageUtils.hasWritableRemovableStorage(this)) {
             android.util.Log.w(TAG, "capturePhoto: no removable storage");
             showStatus(getString(R.string.storage_insert_usb));
             return;
@@ -874,7 +883,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
 
     // 按键再次触发时停止录像，录制内容写入系统视频库。
     private void toggleVideoRecording() {
-        if (!videoRecorderController.isRecording() && !StorageUtils.hasMountedRemovableStorage(this)) {
+        if (!videoRecorderController.isRecording() && !StorageUtils.hasWritableRemovableStorage(this)) {
             android.util.Log.w(TAG, "toggleVideoRecording: no removable storage");
             showStatus(getString(R.string.storage_insert_usb));
             return;

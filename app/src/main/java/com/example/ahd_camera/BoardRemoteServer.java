@@ -29,6 +29,7 @@ final class BoardRemoteServer {
     private final Handler mainHandler;
     private volatile View previewRoot;
     private volatile View overlay;
+    private volatile int previewRotationDegrees;
     private final CommandListener listener;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean videoPaused = new AtomicBoolean(true);
@@ -45,6 +46,10 @@ final class BoardRemoteServer {
     void setPreviewViews(View previewRoot, View overlay) {
         this.previewRoot = previewRoot;
         this.overlay = overlay;
+    }
+
+    void setPreviewRotation(int degrees) {
+        previewRotationDegrees = degrees;
     }
 
     void start() {
@@ -64,6 +69,13 @@ final class BoardRemoteServer {
     void setVideoPaused(boolean paused) {
         videoPaused.set(paused);
         Log.i(TAG, "video paused=" + paused);
+        if (paused) {
+            // A paused stream leaves the decoder displaying its final frame. Closing both
+            // channels tells the phone immediately that the board has no foreground UI.
+            close(videoClient);
+            close(controlClient);
+            Log.i(TAG, "board backgrounded: remote clients disconnected");
+        }
     }
 
     void stop() {
@@ -83,6 +95,12 @@ final class BoardRemoteServer {
             while (running.get()) {
                 try {
                     Socket socket = server.accept();
+                    if (videoPaused.get()) {
+                        Log.i(TAG, "control rejected while board is backgrounded: "
+                                + socket.getInetAddress());
+                        close(socket);
+                        continue;
+                    }
                     Socket previous = controlClient;
                     controlClient = socket;
                     if (previous != null) {
@@ -183,6 +201,12 @@ final class BoardRemoteServer {
             while (running.get()) {
                 try {
                     Socket socket = server.accept();
+                    if (videoPaused.get()) {
+                        Log.i(TAG, "video rejected while board is backgrounded: "
+                                + socket.getInetAddress());
+                        close(socket);
+                        continue;
+                    }
                     Socket previous = videoClient;
                     videoClient = socket;
                     close(previous);
@@ -203,7 +227,8 @@ final class BoardRemoteServer {
 
     private void streamVideoClient(Socket socket) {
         try (Socket client = socket) {
-            new H264PreviewStreamer(mainHandler, () -> previewRoot, () -> overlay)
+            new H264PreviewStreamer(mainHandler, () -> previewRoot, () -> overlay,
+                    () -> previewRotationDegrees)
                     .stream(client, running, videoPaused);
         } catch (IOException | RuntimeException error) {
             if (running.get() && videoClient == socket) {

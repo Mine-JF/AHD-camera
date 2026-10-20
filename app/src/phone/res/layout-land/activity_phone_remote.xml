@@ -35,6 +35,13 @@
             android:textColorHint="#AAB5C2" />
 
         <Button
+            android:id="@+id/phone_discover"
+            style="@style/PhoneControlButton"
+            android:layout_width="64dp"
+            android:layout_height="42dp"
+            android:text="搜索" />
+
+        <Button
             android:id="@+id/phone_connect"
             style="@style/PhoneControlButton"
             android:layout_width="76dp"

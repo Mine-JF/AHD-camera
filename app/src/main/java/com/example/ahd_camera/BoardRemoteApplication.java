@@ -16,6 +16,7 @@ public final class BoardRemoteApplication extends Application
         implements Application.ActivityLifecycleCallbacks {
     private static final String TAG = "BoardRemoteApplication";
     private BoardRemoteServer remoteServer;
+    private BoardDiscoveryServer discoveryServer;
     private Activity currentActivity;
     private Activity lastBoundActivity;
 
@@ -27,6 +28,8 @@ public final class BoardRemoteApplication extends Application
         remoteServer = new BoardRemoteServer(new Handler(Looper.getMainLooper()),
                 this::dispatchRemoteCommand);
         remoteServer.start();
+        discoveryServer = new BoardDiscoveryServer(this);
+        discoveryServer.start();
     }
 
     private void dispatchRemoteCommand(String command) {
@@ -92,12 +95,17 @@ public final class BoardRemoteApplication extends Application
                 + ", instance=" + System.identityHashCode(activity));
         if (remoteServer == null) return;
         if (activity instanceof Camera_view) {
+            remoteServer.setPreviewRotation(((Camera_view) activity).getPreviewRotationDegrees());
             remoteServer.setPreviewViews(activity.findViewById(R.id.camera_container),
                     activity.findViewById(R.id.camera_hud));
         } else {
             remoteServer.setPreviewViews(activity.getWindow().getDecorView(), null);
         }
         remoteServer.setVideoPaused(false);
+    }
+
+    void setPreviewRotation(int degrees) {
+        if (remoteServer != null) remoteServer.setPreviewRotation(degrees);
     }
 
     @Override

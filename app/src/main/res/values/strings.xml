@@ -16,7 +16,7 @@
 <string name="camera_hud_battery">BAT</string>
 <string name="gallery_empty">没有图像和视频</string>
 <string name="gallery_open_failed">Failed to open media</string>
-<string name="storage_insert_usb">请插入U盘</string>
+<string name="storage_insert_usb">No SD card or USB drive detected</string>
 <string name="settings_title">Settings</string>
 <string name="settings_menu_language">Language</string>
 <string name="settings_menu_time">Time</string>

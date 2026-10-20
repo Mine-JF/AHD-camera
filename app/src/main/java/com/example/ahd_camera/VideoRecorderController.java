@@ -21,6 +21,7 @@ import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 final class VideoRecorderController {
 
@@ -43,13 +44,17 @@ final class VideoRecorderController {
 
     private HandlerThread recorderThread;
     private Handler recorderHandler;
-    private boolean recording;
+    private volatile boolean recording;
+    private final AtomicBoolean frameInFlight = new AtomicBoolean();
+    private int[] argbPixels;
+    private byte[] nv12Pixels;
     private MediaCodec encoder;
     private MediaMuxer muxer;
     private ParcelFileDescriptor fileDescriptor;
     private Uri outputUri;
     private int trackIndex = -1;
-    private long frameIndex;
+    private long recordingStartNs;
+    private long lastPresentationTimeUs;
     private int videoWidth;
     private int videoHeight;
     private View sourceView;
@@ -85,6 +90,8 @@ final class VideoRecorderController {
         try {
             videoWidth = even(sourceView.getWidth());
             videoHeight = even(sourceView.getHeight());
+            argbPixels = new int[videoWidth * videoHeight];
+            nv12Pixels = new byte[videoWidth * videoHeight * 3 / 2];
             outputUri = createVideoUri();
             fileDescriptor = context.getContentResolver().openFileDescriptor(outputUri, "rw");
             if (fileDescriptor == null) {
@@ -110,7 +117,8 @@ final class VideoRecorderController {
             recorderThread.start();
             recorderHandler = new Handler(recorderThread.getLooper());
             trackIndex = -1;
-            frameIndex = 0;
+            recordingStartNs = android.os.SystemClock.elapsedRealtimeNanos();
+            lastPresentationTimeUs = -1;
             recording = true;
 
             Log.i(TAG, "start: uri=" + outputUri + ", size=" + videoWidth + "x" + videoHeight);
@@ -129,28 +137,39 @@ final class VideoRecorderController {
             if (!recording || sourceView == null) {
                 return;
             }
-            mainHandler.post(() -> {
-                try {
-                    Bitmap bitmap = PreviewFrameComposer.compose(sourceView, overlayView);
-                    if (recorderHandler != null) {
-                        recorderHandler.post(() -> encodeBitmap(bitmap));
-                    } else {
-                        bitmap.recycle();
+            if (frameInFlight.compareAndSet(false, true)) {
+                mainHandler.post(() -> {
+                    if (!recording) {
+                        frameInFlight.set(false);
+                        return;
                     }
-                } catch (RuntimeException e) {
-                    Log.e(TAG, "captureFrameRunnable: capture failed", e);
-                    stopRecordingWithError(e.getMessage() == null ? "capture frame failed" : e.getMessage());
-                }
-            });
+                    try {
+                        Bitmap bitmap = PreviewFrameComposer.compose(sourceView, overlayView);
+                        if (recorderHandler != null) {
+                            long ptsUs = (android.os.SystemClock.elapsedRealtimeNanos()
+                                    - recordingStartNs) / 1000;
+                            recorderHandler.post(() -> encodeBitmap(bitmap, ptsUs));
+                        } else {
+                            bitmap.recycle();
+                            frameInFlight.set(false);
+                        }
+                    } catch (RuntimeException e) {
+                        frameInFlight.set(false);
+                        Log.e(TAG, "captureFrameRunnable: capture failed", e);
+                        stopRecordingWithError(e.getMessage() == null ? "capture frame failed" : e.getMessage());
+                    }
+                });
+            }
             if (recorderHandler != null) {
                 recorderHandler.postDelayed(this, FRAME_INTERVAL_MS);
             }
         }
     };
 
-    private void encodeBitmap(Bitmap bitmap) {
+    private void encodeBitmap(Bitmap bitmap, long capturePtsUs) {
         if (!recording || encoder == null) {
             bitmap.recycle();
+            frameInFlight.set(false);
             return;
         }
         try {
@@ -161,15 +180,17 @@ final class VideoRecorderController {
                     inputBuffer.clear();
                     byte[] yuvData = argbToNv12(bitmap, videoWidth, videoHeight);
                     inputBuffer.put(yuvData);
-                    long ptsUs = frameIndex * 1_000_000L / FRAME_RATE;
+                    long ptsUs = Math.max(lastPresentationTimeUs + 1, capturePtsUs);
                     encoder.queueInputBuffer(inputIndex, 0, yuvData.length, ptsUs, 0);
-                    frameIndex++;
+                    lastPresentationTimeUs = ptsUs;
                 }
             }
             bitmap.recycle();
+            frameInFlight.set(false);
             drainEncoder(false);
         } catch (RuntimeException e) {
-            bitmap.recycle();
+            if (!bitmap.isRecycled()) bitmap.recycle();
+            frameInFlight.set(false);
             Log.e(TAG, "encodeBitmap: failed", e);
             stopRecordingWithError(e.getMessage() == null ? "encode frame failed" : e.getMessage());
         }
@@ -181,8 +202,10 @@ final class VideoRecorderController {
             return;
         }
         recording = false;
+        frameInFlight.set(false);
         if (recorderHandler != null) {
-            recorderHandler.removeCallbacksAndMessages(null);
+            // Keep already queued bitmap cleanup tasks; dropping them leaks frame bitmaps.
+            recorderHandler.removeCallbacks(captureFrameRunnable);
             recorderHandler.post(() -> {
                 drainEncoder(true);
                 releaseResources(false);
@@ -197,6 +220,7 @@ final class VideoRecorderController {
     private void stopRecordingWithError(String error) {
         Log.e(TAG, "stopRecordingWithError: " + error);
         recording = false;
+        frameInFlight.set(false);
         releaseResources(true);
         notifyRecordingFailed(error);
     }
@@ -209,7 +233,7 @@ final class VideoRecorderController {
             int inputIndex = encoder.dequeueInputBuffer(10_000);
             if (inputIndex >= 0) {
                 encoder.queueInputBuffer(inputIndex, 0, 0,
-                        frameIndex * 1_000_000L / FRAME_RATE,
+                        lastPresentationTimeUs + 1,
                         MediaCodec.BUFFER_FLAG_END_OF_STREAM);
             }
         }
@@ -306,7 +330,10 @@ final class VideoRecorderController {
             recorderThread = null;
         }
         trackIndex = -1;
-        frameIndex = 0;
+        recordingStartNs = 0;
+        lastPresentationTimeUs = -1;
+        argbPixels = null;
+        nv12Pixels = null;
         sourceView = null;
         overlayView = null;
     }
@@ -316,9 +343,9 @@ final class VideoRecorderController {
     }
 
     private byte[] argbToNv12(Bitmap bitmap, int width, int height) {
-        int[] argb = new int[width * height];
+        int[] argb = argbPixels;
         bitmap.getPixels(argb, 0, width, 0, 0, width, height);
-        byte[] yuv = new byte[width * height * 3 / 2];
+        byte[] yuv = nv12Pixels;
         int yIndex = 0;
         int uvIndex = width * height;
 
@@ -330,11 +357,10 @@ final class VideoRecorderController {
                 int b = color & 0xFF;
 
                 int y = clamp((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                int u = clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
-                int v = clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
-
                 yuv[yIndex++] = (byte) clamp(y);
                 if (j % 2 == 0 && i % 2 == 0) {
+                    int u = clamp(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+                    int v = clamp(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
                     yuv[uvIndex++] = (byte) u;
                     yuv[uvIndex++] = (byte) v;
                 }

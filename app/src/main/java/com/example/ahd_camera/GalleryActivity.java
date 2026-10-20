@@ -27,6 +27,8 @@ import java.util.Comparator;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class GalleryActivity extends AppCompatActivity {
 
@@ -36,6 +38,8 @@ public class GalleryActivity extends AppCompatActivity {
     private RecyclerView recyclerView;
     private TextView emptyView;
     private GalleryAdapter adapter;
+    private final ExecutorService galleryLoader = Executors.newSingleThreadExecutor();
+    private volatile int galleryLoadGeneration;
     private final OkHomeKeyHandler okHomeKeyHandler = new OkHomeKeyHandler(
             this::openSelectedItem, () -> OkHomeKeyHandler.returnToPreview(this));
 
@@ -66,17 +70,24 @@ public class GalleryActivity extends AppCompatActivity {
         super.onResume();
         Log.d(TAG, "onResume: ensure permission and load");
         Utils.hideSystemUI(getWindow());
+        if (!StorageUtils.hasMountedRemovableStorage(this)) {
+            adapter.submitItems(Collections.emptyList());
+            emptyView.setText(R.string.storage_insert_usb);
+            return;
+        }
         ensureMediaPermissionAndLoad();
     }
 
     @Override
     protected void onPause() {
+        galleryLoadGeneration++;
         okHomeKeyHandler.cancel();
         super.onPause();
     }
 
     @Override
     protected void onDestroy() {
+        galleryLoader.shutdownNow();
         okHomeKeyHandler.cancel();
         if (adapter != null) {
             adapter.release();
@@ -114,12 +125,24 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     private void loadGalleryItems() {
+        int generation = ++galleryLoadGeneration;
+        galleryLoader.execute(() -> {
+            if (generation != galleryLoadGeneration) return;
+            List<GalleryItem> items = queryGalleryItems();
+            runOnUiThread(() -> {
+                if (generation == galleryLoadGeneration && !isFinishing() && !isDestroyed()) {
+                    showItems(items);
+                }
+            });
+        });
+    }
+
+    private List<GalleryItem> queryGalleryItems() {
         List<GalleryItem> items = new ArrayList<>();
-        List<String> removableVolumes = StorageUtils.getMountedSdCardVolumeNames(this);
+        List<String> removableVolumes = StorageUtils.getMountedRemovableVolumeNames(this);
         if (removableVolumes.isEmpty()) {
             Log.w(TAG, "loadGalleryItems: no mounted removable external volumes");
-            showItems(items);
-            return;
+            return items;
         }
 
         for (String volumeName : removableVolumes) {
@@ -129,7 +152,7 @@ public class GalleryActivity extends AppCompatActivity {
         Log.d(TAG, "loadGalleryItems: total count=" + items.size()
                 + ", removableVolumes=" + removableVolumes);
 
-        showItems(items);
+        return items;
     }
 
     private void loadGalleryItemsFromVolume(String volumeName, List<GalleryItem> items) {
@@ -206,6 +229,11 @@ public class GalleryActivity extends AppCompatActivity {
     }
 
     private void showItems(List<GalleryItem> items) {
+        if (!StorageUtils.hasMountedRemovableStorage(this)) {
+            adapter.submitItems(Collections.emptyList());
+            emptyView.setText(R.string.storage_insert_usb);
+            return;
+        }
         adapter.submitItems(items);
         emptyView.setText(items.isEmpty() ? getString(R.string.gallery_empty) : "");
         if (!items.isEmpty()) {

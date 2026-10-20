@@ -15,6 +15,7 @@
     <string name="camera_hud_storage">SD</string>
     <string name="camera_hud_battery">BAT</string>
     <string name="gallery_empty">未找到图片或视频</string>
+    <string name="storage_insert_usb">未检测到SD卡或U盘</string>
     <string name="gallery_open_failed">打开媒体失败</string>
     <string name="settings_title">设置</string>
     <string name="settings_menu_language">语言</string>

@@ -31,15 +31,30 @@ final class StorageUtils {
         return !getMountedRemovableVolumeNames(context).isEmpty();
     }
 
+    static boolean hasWritableRemovableStorage(Context context) {
+        return getPreferredRemovableVolumeName(context) != null;
+    }
+
     static String getPreferredRemovableVolumeName(Context context) {
         List<String> volumeNames = getMountedSdCardVolumeNames(context);
         if (volumeNames.isEmpty()) {
             Log.w(TAG, "getPreferredRemovableVolumeName: no removable volume");
             return null;
         }
-        String volumeName = volumeNames.get(0);
-        Log.d(TAG, "getPreferredRemovableVolumeName: volumeName=" + volumeName);
-        return volumeName;
+        StorageManager manager = context.getSystemService(StorageManager.class);
+        if (manager != null) {
+            for (String volumeName : volumeNames) {
+                for (StorageVolume volume : manager.getStorageVolumes()) {
+                    if (volumeName.equals(volume.getMediaStoreVolumeName())
+                            && Environment.MEDIA_MOUNTED.equals(volume.getState())) {
+                        Log.d(TAG, "getPreferredRemovableVolumeName: volumeName=" + volumeName);
+                        return volumeName;
+                    }
+                }
+            }
+        }
+        Log.w(TAG, "getPreferredRemovableVolumeName: removable storage is read-only");
+        return null;
     }
 
     /** 优先使用 MMC/SD 卡；无法识别底层设备时保留原有可移除存储行为。 */

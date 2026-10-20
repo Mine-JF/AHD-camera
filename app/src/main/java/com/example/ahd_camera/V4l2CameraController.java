@@ -44,14 +44,17 @@ public class V4l2CameraController implements CameraPreviewController {
     private static final String MAIN_PATH_KEYWORD = "mainpath";
     // 媒体拓扑已确认：m01(3-0059) 经 rkcif 输出，m00(3-0058) 经 rkisp mainpath 输出。
     // /dev/video 编号由现有扫描逻辑决定，不在这里写死。
-    private static final String PRIMARY_AHD_SUBDEV = "/dev/v4l-subdev2"; // m01_b_ark7128
-    private static final String SECONDARY_AHD_SUBDEV = "/dev/v4l-subdev6"; // m00_b_ark7128
+    private static final String PRIMARY_AHD_ID = "m01_b_ark7128"; // chip 0x59
+    private static final String SECONDARY_AHD_ID = "m00_b_ark7128"; // chip 0x58
 
     private final CameraStatusCallback statusCallback;
     private final Handler mainHandler = new Handler(android.os.Looper.getMainLooper());
     // 页面启动扫描与后台轮询都可能读取 ARK7128 的分页 I2C 状态寄存器；必须
     // 串行，避免同一时刻发出两组 subdev ioctl 导致驱动页选择相互干扰。
     private final Object topologyQueryLock = new Object();
+    // Native handle belongs to both the UI lifecycle and the camera polling thread.
+    // Serialize every use with close so nativeIsPreviewActive never sees freed memory.
+    private final Object cameraLifecycleLock = new Object();
     private final Runnable topologyPollRunnable = new Runnable() {
         @Override
         public void run() {
@@ -63,8 +66,8 @@ public class V4l2CameraController implements CameraPreviewController {
     };
 
     private HandlerThread cameraThread;
-    private Handler cameraHandler;
-    private boolean availabilityMonitorRegistered;
+    private volatile Handler cameraHandler;
+    private volatile boolean availabilityMonitorRegistered;
     private String[] lastTopology = new String[0];
     private String[] pendingTopology = new String[0];
     private int pendingTopologyPollCount;
@@ -206,8 +209,8 @@ public class V4l2CameraController implements CameraPreviewController {
             VideoNodeInfo secondaryNode = choosePlatformNode(
                     platformCandidates, SECONDARY_PLATFORM_KEYWORD, true);
 
-            appendIfAhdInputPresent(selected, primaryNode, PRIMARY_AHD_SUBDEV, "primary-rkcif");
-            appendIfAhdInputPresent(selected, secondaryNode, SECONDARY_AHD_SUBDEV,
+            appendIfAhdInputPresent(selected, primaryNode, PRIMARY_AHD_ID, "primary-rkcif");
+            appendIfAhdInputPresent(selected, secondaryNode, SECONDARY_AHD_ID,
                     "secondary-rkisp-mainpath");
 
             // 对名称不标准的板级驱动保留单路兜底，但不能把同一 pipeline 下的
@@ -277,9 +280,17 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void appendIfAhdInputPresent(
-            List<String> selected, VideoNodeInfo node, String subDevicePath, String role
+            List<String> selected, VideoNodeInfo node, String ahdId, String role
     ) {
         if (node == null) {
+            return;
+        }
+        String subDevicePath = findAhdSubdevice(ahdId);
+        if (subDevicePath == null) {
+            Log.w(TAG, "appendIfAhdInputPresent: no matching AHD subdevice for " + ahdId);
+            if (Arrays.asList(lastTopology).contains(node.devPath)) {
+                appendDistinctNode(selected, node, role + "-status-unavailable");
+            }
             return;
         }
         int presence = V4l2CameraNative.getAhdInputPresence(subDevicePath);
@@ -289,14 +300,33 @@ public class V4l2CameraController implements CameraPreviewController {
             return;
         }
         if (presence < 0) {
-            // 查询失败时不要把仍在显示的画面误判为拔出；下一轮轮询会重试。
-            Log.w(TAG, "appendIfAhdInputPresent: status unavailable, keep node, role="
+            // Status failure must not open a new no-signal stream. Preserve an already
+            // selected camera until the next successful poll instead.
+            if (!Arrays.asList(lastTopology).contains(node.devPath)) {
+                Log.w(TAG, "appendIfAhdInputPresent: status unavailable, skip new node, role="
+                        + role + ", subdev=" + subDevicePath);
+                return;
+            }
+            Log.w(TAG, "appendIfAhdInputPresent: status unavailable, keep active node, role="
                     + role + ", subdev=" + subDevicePath);
         } else {
             Log.d(TAG, "appendIfAhdInputPresent: AHD signal present, role=" + role
                     + ", subdev=" + subDevicePath);
         }
         appendDistinctNode(selected, node, role);
+    }
+
+    private String findAhdSubdevice(String ahdId) {
+        File[] entries = new File(SYSFS_VIDEO4LINUX_DIR).listFiles(
+                file -> file.getName().startsWith("v4l-subdev"));
+        if (entries == null) return null;
+        for (File entry : entries) {
+            String name = readFirstLine(new File(entry, "name"));
+            if (name.contains("ark7128") && name.contains(ahdId)) {
+                return "/dev/" + entry.getName();
+            }
+        }
+        return null;
     }
 
     private VideoNodeInfo readVideoNodeInfo(File sysfsVideoDir) {
@@ -399,6 +429,12 @@ public class V4l2CameraController implements CameraPreviewController {
 
     @Override
     public void openSelectedCameras(String[] cameraIds) {
+        synchronized (cameraLifecycleLock) {
+            openSelectedCamerasLocked(cameraIds);
+        }
+    }
+
+    private void openSelectedCamerasLocked(String[] cameraIds) {
         Log.d(TAG, "openSelectedCameras: " + Arrays.toString(cameraIds));
         closeAllCameras();
 
@@ -417,13 +453,21 @@ public class V4l2CameraController implements CameraPreviewController {
 
     @Override
     public void closeAllCameras() {
-        Log.d(TAG, "closeAllCameras");
-        closeSlot(leftSlot);
-        closeSlot(rightSlot);
+        synchronized (cameraLifecycleLock) {
+            Log.d(TAG, "closeAllCameras");
+            closeSlot(leftSlot);
+            closeSlot(rightSlot);
+        }
     }
 
     @Override
     public int getOpenCameraCount() {
+        synchronized (cameraLifecycleLock) {
+            return getOpenCameraCountLocked();
+        }
+    }
+
+    private int getOpenCameraCountLocked() {
         int count = 0;
         if (V4l2CameraNative.isPreviewActive(leftSlot.nativeHandle)) {
             count++;
@@ -461,6 +505,12 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void maybeStartPreview(PreviewSlot slot) {
+        synchronized (cameraLifecycleLock) {
+            maybeStartPreviewLocked(slot);
+        }
+    }
+
+    private void maybeStartPreviewLocked(PreviewSlot slot) {
         if (!V4l2CameraNative.isAvailable()) {
             if (!nativeUnavailableLogged) {
                 nativeUnavailableLogged = true;
@@ -496,6 +546,12 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void startPreview(PreviewSlot slot, int requestGeneration, String requestedDevicePath) {
+        synchronized (cameraLifecycleLock) {
+            startPreviewLocked(slot, requestGeneration, requestedDevicePath);
+        }
+    }
+
+    private void startPreviewLocked(PreviewSlot slot, int requestGeneration, String requestedDevicePath) {
         Surface surface = null;
         long handle = 0L;
         try {
@@ -585,6 +641,12 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void closeSlot(PreviewSlot slot) {
+        synchronized (cameraLifecycleLock) {
+            closeSlotLocked(slot);
+        }
+    }
+
+    private void closeSlotLocked(PreviewSlot slot) {
         Log.d(TAG, "closeSlot: slot=" + slot.label
                 + ", devicePath=" + slot.devicePath
                 + ", handle=" + slot.nativeHandle
@@ -657,6 +719,12 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void notifyStoppedPreviewIfNeeded(PreviewSlot slot) {
+        synchronized (cameraLifecycleLock) {
+            notifyStoppedPreviewIfNeededLocked(slot);
+        }
+    }
+
+    private void notifyStoppedPreviewIfNeededLocked(PreviewSlot slot) {
         if (slot.nativeHandle == 0L || slot.starting || slot.disconnectReported
                 || V4l2CameraNative.isPreviewActive(slot.nativeHandle)) {
             return;
@@ -691,6 +759,12 @@ public class V4l2CameraController implements CameraPreviewController {
     }
 
     private void notifyDisconnectedIfNeeded(PreviewSlot slot, String[] topology) {
+        synchronized (cameraLifecycleLock) {
+            notifyDisconnectedIfNeededLocked(slot, topology);
+        }
+    }
+
+    private void notifyDisconnectedIfNeededLocked(PreviewSlot slot, String[] topology) {
         if (slot.devicePath == null || slot.disconnectReported) {
             return;
         }
