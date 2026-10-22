@@ -1,4 +1,6 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.input;
+
+import com.example.ahd_camera.Camera_view;
 
 import android.app.Activity;
 import android.content.Intent;

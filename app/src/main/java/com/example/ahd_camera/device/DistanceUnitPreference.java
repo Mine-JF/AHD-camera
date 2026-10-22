@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.device;
 
 import android.content.Context;
 

@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.camera;
 
 import android.view.TextureView;
 

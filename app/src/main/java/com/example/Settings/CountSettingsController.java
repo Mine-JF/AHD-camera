@@ -6,7 +6,7 @@ import android.widget.Button;
 import android.widget.TextView;
 
 import com.example.ahd_camera.R;
-import com.example.ahd_camera.DistanceUnitPreference;
+import com.example.ahd_camera.device.DistanceUnitPreference;
 
 import java.util.Locale;
 

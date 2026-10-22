@@ -1,4 +1,8 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.remote;
+
+import com.example.ahd_camera.camera.PreviewFrameComposer;
+import com.example.ahd_camera.camera.RemoteCameraFrames;
+import com.example.ahd_camera.R;
 
 import android.graphics.Bitmap;
 import android.media.MediaCodec;

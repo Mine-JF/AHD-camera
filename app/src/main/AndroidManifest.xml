@@ -14,7 +14,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <application
-        android:name="com.example.ahd_camera.BoardRemoteApplication"
+        android:name="com.example.ahd_camera.remote.BoardRemoteApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -37,11 +37,11 @@
 <!--            </intent-filter>-->
         </activity>
         <activity
-            android:name=".GalleryActivity"
+            android:name="com.example.ahd_camera.media.GalleryActivity"
             android:exported="true"
             android:screenOrientation="landscape" />
         <activity
-            android:name=".MediaPreviewActivity"
+            android:name="com.example.ahd_camera.media.MediaPreviewActivity"
             android:exported="true"
             android:screenOrientation="landscape" />
         <activity

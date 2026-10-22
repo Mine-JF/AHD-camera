@@ -1,5 +1,21 @@
 package com.example.ahd_camera;
 
+import com.example.ahd_camera.camera.CameraHudController;
+import com.example.ahd_camera.camera.CameraPreviewController;
+import com.example.ahd_camera.camera.CameraStatusCallback;
+import com.example.ahd_camera.camera.V4l2CameraController;
+import com.example.ahd_camera.common.Utils;
+import com.example.ahd_camera.device.DistanceCounterController;
+import com.example.ahd_camera.device.DistanceUnitPreference;
+import com.example.ahd_camera.device.MicrophoneController;
+import com.example.ahd_camera.device.MotorController;
+import com.example.ahd_camera.input.HardwareKeySourceFilter;
+import com.example.ahd_camera.media.GalleryActivity;
+import com.example.ahd_camera.media.PhotoCaptureController;
+import com.example.ahd_camera.media.VideoRecorderController;
+import com.example.ahd_camera.remote.BoardRemoteApplication;
+import com.example.ahd_camera.storage.StorageUtils;
+
 import android.Manifest;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -266,7 +282,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         super.onPause();
     }
 
-    void handleRemoteCommand(String command) {
+    public void handleRemoteCommand(String command) {
         android.util.Log.i(TAG, "handleRemoteCommand: " + command);
         if (remoteMenuOpen && (command.equals("OK") || command.equals("HOME")
                 || command.equals("BACK") || command.equals("BACK_LONG")
@@ -836,7 +852,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         });
     }
 
-    int getPreviewRotationDegrees() {
+    public int getPreviewRotationDegrees() {
         return previewRotationDegrees;
     }
 

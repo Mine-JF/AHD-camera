@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.input;
 
 import android.util.Log;
 import android.view.InputDevice;

@@ -1,13 +1,13 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.device;
 
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
 /** Receives DnkCounter active-report frames without blocking the UI thread. */
-final class DistanceCounterController {
+public final class DistanceCounterController {
 
-    interface Listener {
+    public interface Listener {
         void onCounterValue(int value);
     }
 
@@ -20,12 +20,12 @@ final class DistanceCounterController {
     private volatile boolean running;
     private Thread workerThread;
 
-    DistanceCounterController(MotorController motorController, Listener listener) {
+    public DistanceCounterController(MotorController motorController, Listener listener) {
         this.motorController = motorController;
         this.listener = listener;
     }
 
-    synchronized void start() {
+    public synchronized void start() {
         if (running) {
             return;
         }
@@ -34,7 +34,7 @@ final class DistanceCounterController {
         workerThread.start();
     }
 
-    synchronized void stop() {
+    public synchronized void stop() {
         running = false;
         if (workerThread != null) {
             workerThread.interrupt();

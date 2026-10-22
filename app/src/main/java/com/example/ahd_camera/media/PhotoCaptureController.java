@@ -1,4 +1,7 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.media;
+
+import com.example.ahd_camera.camera.PreviewFrameComposer;
+import com.example.ahd_camera.storage.StorageUtils;
 
 import android.content.ContentValues;
 import android.content.Context;
@@ -19,9 +22,9 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-final class PhotoCaptureController {
+public final class PhotoCaptureController {
 
-    interface Callback {
+    public interface Callback {
         void onPhotoSaved(Uri uri);
 
         void onPhotoSaveFailed(String error);
@@ -33,12 +36,12 @@ final class PhotoCaptureController {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService ioExecutor = Executors.newSingleThreadExecutor();
 
-    PhotoCaptureController(Context context) {
+    public PhotoCaptureController(Context context) {
         this.context = context.getApplicationContext();
     }
 
     // 在主线程抓取当前预览视图位图，再异步写入系统图片库。
-    void capture(View sourceView, View overlayView, Callback callback) {
+    public void capture(View sourceView, View overlayView, Callback callback) {
         if (sourceView == null || sourceView.getWidth() <= 0 || sourceView.getHeight() <= 0) {
             Log.e(TAG, "capture: invalid sourceView");
             callback.onPhotoSaveFailed("preview view is not ready");

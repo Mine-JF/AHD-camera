@@ -1,4 +1,9 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.media;
+
+import com.example.ahd_camera.common.Utils;
+import com.example.ahd_camera.input.HardwareKeySourceFilter;
+import com.example.ahd_camera.input.OkHomeKeyHandler;
+import com.example.ahd_camera.R;
 
 import android.net.Uri;
 import android.os.Bundle;

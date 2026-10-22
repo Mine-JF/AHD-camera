@@ -1,4 +1,6 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.camera;
+
+import com.example.ahd_camera.V4l2CameraNative;
 
 import android.os.Handler;
 import android.os.HandlerThread;

@@ -1,4 +1,7 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.media;
+
+import com.example.ahd_camera.camera.PreviewFrameComposer;
+import com.example.ahd_camera.storage.StorageUtils;
 
 import android.content.ContentValues;
 import android.content.Context;
@@ -23,9 +26,9 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-final class VideoRecorderController {
+public final class VideoRecorderController {
 
-    interface Callback {
+    public interface Callback {
         void onRecordingStarted(Uri uri);
 
         void onRecordingStopped(Uri uri);
@@ -62,11 +65,11 @@ final class VideoRecorderController {
     private Callback callback;
     private final MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
 
-    VideoRecorderController(Context context) {
+    public VideoRecorderController(Context context) {
         this.context = context.getApplicationContext();
     }
 
-    void toggleRecording(View sourceView, View overlayView, Callback callback) {
+    public void toggleRecording(View sourceView, View overlayView, Callback callback) {
         if (recording) {
             stopRecording();
         } else {
@@ -74,7 +77,7 @@ final class VideoRecorderController {
         }
     }
 
-    boolean isRecording() {
+    public boolean isRecording() {
         return recording;
     }
 
@@ -196,7 +199,7 @@ final class VideoRecorderController {
         }
     }
 
-    void stopRecording() {
+    public void stopRecording() {
         if (!recording) {
             Log.d(TAG, "stopRecording: not recording");
             return;

@@ -1,4 +1,6 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.media;
+
+import com.example.ahd_camera.R;
 
 import android.content.ContentResolver;
 import android.graphics.Bitmap;

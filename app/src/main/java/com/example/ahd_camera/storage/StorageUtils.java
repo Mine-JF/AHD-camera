@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.storage;
 
 import android.content.Context;
 import android.os.Environment;
@@ -20,22 +20,22 @@ import java.util.Set;
  * 外部可移除存储工具类。
  * 统一管理 U 盘 / SD 卡检测，避免图库、拍照、录像各写一套判断逻辑。
  */
-final class StorageUtils {
+public final class StorageUtils {
 
     private static final String TAG = "StorageUtils";
 
     private StorageUtils() {
     }
 
-    static boolean hasMountedRemovableStorage(Context context) {
+    public static boolean hasMountedRemovableStorage(Context context) {
         return !getMountedRemovableVolumeNames(context).isEmpty();
     }
 
-    static boolean hasWritableRemovableStorage(Context context) {
+    public static boolean hasWritableRemovableStorage(Context context) {
         return getPreferredRemovableVolumeName(context) != null;
     }
 
-    static String getPreferredRemovableVolumeName(Context context) {
+    public static String getPreferredRemovableVolumeName(Context context) {
         List<String> volumeNames = getMountedSdCardVolumeNames(context);
         if (volumeNames.isEmpty()) {
             Log.w(TAG, "getPreferredRemovableVolumeName: no removable volume");
@@ -58,7 +58,7 @@ final class StorageUtils {
     }
 
     /** 优先使用 MMC/SD 卡；无法识别底层设备时保留原有可移除存储行为。 */
-    static List<String> getMountedSdCardVolumeNames(Context context) {
+    public static List<String> getMountedSdCardVolumeNames(Context context) {
         List<String> volumes = getMountedRemovableVolumeNames(context);
         if (volumes.size() <= 1) {
             return volumes;
@@ -91,7 +91,7 @@ final class StorageUtils {
         return volumes;
     }
 
-    static List<String> getMountedRemovableVolumeNames(Context context) {
+    public static List<String> getMountedRemovableVolumeNames(Context context) {
         StorageManager storageManager = context.getSystemService(StorageManager.class);
         if (storageManager == null) {
             Log.w(TAG, "getMountedRemovableVolumeNames: storageManager is null");

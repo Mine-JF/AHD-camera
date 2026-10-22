@@ -1,4 +1,9 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.remote;
+
+import com.example.ahd_camera.Camera_view;
+
+import com.example.ahd_camera.BuildConfig;
+import com.example.ahd_camera.R;
 
 import android.app.Activity;
 import android.app.Application;
@@ -104,7 +109,7 @@ public final class BoardRemoteApplication extends Application
         remoteServer.setVideoPaused(false);
     }
 
-    void setPreviewRotation(int degrees) {
+    public void setPreviewRotation(int degrees) {
         if (remoteServer != null) remoteServer.setPreviewRotation(degrees);
     }
 

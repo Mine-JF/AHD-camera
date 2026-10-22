@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.camera;
 
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -14,14 +14,14 @@ import android.view.ViewGroup;
  * 这里不能直接对包含 TextureView 的根布局调用 draw()，
  * 否则 TextureView 的相机画面不会进入位图，最终就会得到黑屏。
  */
-final class PreviewFrameComposer {
+public final class PreviewFrameComposer {
 
     private static final String TAG = "PreviewFrameComposer";
 
     private PreviewFrameComposer() {
     }
 
-    static Bitmap compose(View previewRoot, View overlayView) {
+    public static Bitmap compose(View previewRoot, View overlayView) {
         if (previewRoot == null || previewRoot.getWidth() <= 0 || previewRoot.getHeight() <= 0) {
             throw new IllegalStateException("preview root is not ready");
         }

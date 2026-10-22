@@ -1,28 +1,30 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.camera;
+
+import com.example.ahd_camera.V4l2CameraNative;
 
 /** Latest-frame mailbox: slow encoding drops old camera frames instead of increasing latency. */
-final class RemoteCameraFrames {
+public final class RemoteCameraFrames {
     private static byte[] latest;
     private static long sequence;
     private static int activeStreams;
 
     private RemoteCameraFrames() { }
 
-    static synchronized void setActive(boolean enabled) {
+    public static synchronized void setActive(boolean enabled) {
         activeStreams = Math.max(0, activeStreams + (enabled ? 1 : -1));
         if (activeStreams == 0) latest = null;
         V4l2CameraNative.setRemoteFramesEnabled(activeStreams > 0);
         notifyAllFrames();
     }
 
-    static synchronized void offer(byte[] frame) {
+    public static synchronized void offer(byte[] frame) {
         if (activeStreams == 0) return;
         latest = frame;
         sequence++;
         notifyAllFrames();
     }
 
-    static synchronized Frame waitForNext(long afterSequence, long timeoutMs)
+    public static synchronized Frame waitForNext(long afterSequence, long timeoutMs)
             throws InterruptedException {
         if (activeStreams > 0 && sequence == afterSequence) RemoteCameraFrames.class.wait(timeoutMs);
         return activeStreams > 0 && latest != null && sequence != afterSequence
@@ -33,9 +35,9 @@ final class RemoteCameraFrames {
         RemoteCameraFrames.class.notifyAll();
     }
 
-    static final class Frame {
-        final byte[] nv12;
-        final long sequence;
+    public static final class Frame {
+        public final byte[] nv12;
+        public final long sequence;
 
         Frame(byte[] nv12, long sequence) {
             this.nv12 = nv12;

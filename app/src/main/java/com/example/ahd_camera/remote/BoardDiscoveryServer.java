@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.remote;
 
 import android.content.Context;
 import android.net.ConnectivityManager;

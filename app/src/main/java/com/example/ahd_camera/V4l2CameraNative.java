@@ -1,5 +1,7 @@
 package com.example.ahd_camera;
 
+import com.example.ahd_camera.camera.RemoteCameraFrames;
+
 import android.util.Log;
 import android.view.Surface;
 
@@ -90,11 +92,11 @@ public final class V4l2CameraNative {
         return result;
     }
 
-    static void setRemoteFrameSource(long handle) {
+    public static void setRemoteFrameSource(long handle) {
         if (AVAILABLE) nativeSetRemoteFrameSource(handle);
     }
 
-    static void setRemoteFramesEnabled(boolean enabled) {
+    public static void setRemoteFramesEnabled(boolean enabled) {
         if (AVAILABLE) nativeSetRemoteFramesEnabled(enabled);
     }
 

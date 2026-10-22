@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.media;
 
 import android.net.Uri;
 

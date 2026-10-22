@@ -1,4 +1,4 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.common;
 
 import android.os.Build;
 import android.view.View;

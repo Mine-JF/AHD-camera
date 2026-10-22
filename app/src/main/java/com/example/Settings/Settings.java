@@ -18,9 +18,9 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.ahd_camera.R;
-import com.example.ahd_camera.HardwareKeySourceFilter;
-import com.example.ahd_camera.OkHomeKeyHandler;
-import com.example.ahd_camera.Utils;
+import com.example.ahd_camera.input.HardwareKeySourceFilter;
+import com.example.ahd_camera.input.OkHomeKeyHandler;
+import com.example.ahd_camera.common.Utils;
 
 import java.util.Arrays;
 import java.util.List;
@@ -269,7 +269,7 @@ public class Settings extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        ((com.example.ahd_camera.BoardRemoteApplication) getApplication()).bindActivity(this);
+        ((com.example.ahd_camera.remote.BoardRemoteApplication) getApplication()).bindActivity(this);
         activeRemoteSettings = new WeakReference<>(this);
         Log.d(TAG, "onResume");
         Utils.hideSystemUI(getWindow());
@@ -355,7 +355,7 @@ public class Settings extends AppCompatActivity {
         super.onWindowFocusChanged(hasFocus);
         Log.d(TAG, "onWindowFocusChanged: hasFocus=" + hasFocus);
         if (hasFocus) {
-            ((com.example.ahd_camera.BoardRemoteApplication) getApplication()).bindActivity(this);
+            ((com.example.ahd_camera.remote.BoardRemoteApplication) getApplication()).bindActivity(this);
             Utils.hideSystemUI(getWindow());
         }
     }

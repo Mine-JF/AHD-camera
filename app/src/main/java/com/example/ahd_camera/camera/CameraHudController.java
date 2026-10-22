@@ -1,4 +1,9 @@
-package com.example.ahd_camera;
+package com.example.ahd_camera.camera;
+
+import com.example.ahd_camera.device.DistanceUnitPreference;
+import com.example.ahd_camera.device.MicrophoneController;
+import com.example.ahd_camera.R;
+import com.example.ahd_camera.storage.StorageUtils;
 
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -19,7 +24,7 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.TimeZone;
 
-final class CameraHudController {
+public final class CameraHudController {
 
     private static final String TAG = "CameraHudController";
 
@@ -39,7 +44,7 @@ final class CameraHudController {
     private TextView batteryStatusView;
     private float distanceMeters;
 
-    CameraHudController(AppCompatActivity activity, MicrophoneController microphoneController) {
+    public CameraHudController(AppCompatActivity activity, MicrophoneController microphoneController) {
         this.activity = activity;
         this.microphoneController = microphoneController;
         dateFormat.setTimeZone(TimeZone.getDefault());
@@ -47,7 +52,7 @@ final class CameraHudController {
     }
 
     // 绑定 HUD 视图引用，避免页面层直接处理顶部状态栏细节。
-    void bind() {
+    public void bind() {
         dateTimeView = activity.findViewById(R.id.hud_datetime);
         distanceView = activity.findViewById(R.id.hud_distance);
         micIconView = activity.findViewById(R.id.hud_mic_icon);
@@ -63,13 +68,13 @@ final class CameraHudController {
     }
 
     // 接收页面层传入的实时测距值，实际刷新由 refresh() 统一执行。
-    void setDistanceMeters(float distanceMeters) {
+    public void setDistanceMeters(float distanceMeters) {
         this.distanceMeters = distanceMeters;
         Log.d(TAG, "setDistanceMeters: distanceMeters=" + distanceMeters);
     }
 
     // 统一刷新顶部 OSD，便于在时间、距离、网络、存储或麦克风状态变化时复用。
-    void refresh() {
+    public void refresh() {
         Log.d(TAG, "refresh: distanceMeters=" + distanceMeters);
         if (dateTimeView != null) {
             String dateTime = dateFormat.format(new Date());
