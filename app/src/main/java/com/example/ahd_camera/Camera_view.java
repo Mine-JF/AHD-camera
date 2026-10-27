@@ -199,6 +199,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         android.util.Log.d(TAG, "onCreate: nativeBackendAvailable=" + nativeBackendAvailable
                 + ", summary=" + nativeBackendSummary);
         microphoneController = new MicrophoneController(this);
+        // Start each camera session with audio muted; the physical key and phone can enable it.
+        microphoneController.setEnabled(false);
         hudController = new CameraHudController(this, microphoneController);
         photoCaptureController = new PhotoCaptureController(this);
         videoRecorderController = new VideoRecorderController(this);
@@ -331,7 +333,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             remoteMenuOpen = settingsOverlay.isVisible();
             return;
         }
-        if (remoteMenuOpen && !command.equals("MENU") && !command.equals("STOP_ALL")) {
+        if (remoteMenuOpen && !command.equals("MENU") && !command.equals("MIC")
+                && !command.equals("STOP_ALL")) {
             // Board hardware shortcuts do not control the preview while Settings is foreground.
             return;
         }
@@ -379,6 +382,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             case "HOME": case "BACK":
                 // The preview page is already home; a short back press does not exit it.
                 break;
+            case "MIC":
             case "BACK_LONG":
                 microphoneController.setEnabled(!microphoneController.isEnabled());
                 hudController.refresh();
@@ -1017,6 +1021,10 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     /** Snapshot read by the LAN control connection for phone button indicators. */
     public boolean isRemoteLightEnabled() {
         return lightEnabled;
+    }
+
+    public boolean isRemoteMicrophoneEnabled() {
+        return microphoneController != null && microphoneController.isEnabled();
     }
 
     public boolean isRemoteRecording() {

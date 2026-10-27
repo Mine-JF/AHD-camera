@@ -139,7 +139,8 @@ public final class PhoneRemoteActivity extends Activity {
         int[] ids = {R.id.phone_up, R.id.phone_down, R.id.phone_left, R.id.phone_right,
                 R.id.phone_ok_home, R.id.phone_focus_plus, R.id.phone_focus_minus,
                 R.id.phone_distance_reset, R.id.phone_light, R.id.phone_menu,
-                R.id.phone_back, R.id.phone_rotate, R.id.phone_photo, R.id.phone_record};
+                R.id.phone_back, R.id.phone_microphone, R.id.phone_rotate,
+                R.id.phone_photo, R.id.phone_record};
         for (int id : ids) {
             View button = findViewById(id);
             if (button != null) {
@@ -149,11 +150,14 @@ public final class PhoneRemoteActivity extends Activity {
         }
     }
 
-    private void showBoardControlState(boolean lightOn, boolean recording) {
+    private void showBoardControlState(boolean lightOn, boolean recording,
+            boolean microphoneOn) {
         View lightButton = findViewById(R.id.phone_light);
         View recordButton = findViewById(R.id.phone_record);
+        View microphoneButton = findViewById(R.id.phone_microphone);
         if (lightButton != null) lightButton.setSelected(lightOn);
         if (recordButton != null) recordButton.setSelected(recording);
+        if (microphoneButton != null) microphoneButton.setSelected(microphoneOn);
     }
 
     private void startDiscovery() {
@@ -252,6 +256,10 @@ public final class PhoneRemoteActivity extends Activity {
             client.send("LIGHT");
         }
         else if (id == R.id.phone_menu) client.send("MENU");
+        else if (id == R.id.phone_microphone) {
+            view.setSelected(!view.isSelected());
+            client.send("MIC");
+        }
         else if (id == R.id.phone_rotate) client.send("ROTATE");
         else if (id == R.id.phone_photo) client.send("PHOTO");
         else if (id == R.id.phone_record) {
@@ -263,53 +271,51 @@ public final class PhoneRemoteActivity extends Activity {
     @SuppressWarnings("ClickableViewAccessibility")
     private void bindOkHomeButton() {
         View button = findViewById(R.id.phone_ok_home);
+        final boolean[] pressed = {false};
+        final boolean[] homeSent = {false};
+        final Runnable sendHome = () -> {
+            if (!pressed[0] || homeSent[0]) return;
+            homeSent[0] = true;
+            client.send("HOME");
+        };
         button.setOnClickListener(v -> client.send("OK"));
         button.setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
                 v.setPressed(true);
+                pressed[0] = true;
+                homeSent[0] = false;
+                v.removeCallbacks(sendHome);
+                v.postDelayed(sendHome, 650);
                 return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
                 v.setPressed(false);
+                v.removeCallbacks(sendHome);
+                if (!pressed[0]) return true;
+                pressed[0] = false;
                 if (event.getEventTime() - event.getDownTime() >= 650) {
-                    client.send("HOME");
-                } else {
+                    if (!homeSent[0]) {
+                        homeSent[0] = true;
+                        client.send("HOME");
+                    }
+                } else if (!homeSent[0]) {
                     v.performClick();
                 }
                 return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
                 v.setPressed(false);
+                pressed[0] = false;
+                v.removeCallbacks(sendHome);
                 return true;
             }
             return false;
         });
     }
 
-    @SuppressWarnings("ClickableViewAccessibility")
     private void bindBackButton() {
         View button = findViewById(R.id.phone_back);
         button.setOnClickListener(v -> client.send("BACK"));
-        button.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                v.setPressed(true);
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                v.setPressed(false);
-                if (event.getEventTime() - event.getDownTime() >= 2000) {
-                    client.send("BACK_LONG");
-                } else {
-                    v.performClick();
-                }
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
-                v.setPressed(false);
-                return true;
-            }
-            return false;
-        });
     }
 
     @Override

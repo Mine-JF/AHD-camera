@@ -309,7 +309,8 @@ final class BoardRemoteServer {
             case "FOCUS_MINUS_DOWN": case "FOCUS_MINUS_UP":
             case "PHOTO": case "RECORD": case "STOP_ALL":
             case "RESET_DISTANCE": case "LIGHT":
-            case "MENU": case "BACK": case "BACK_LONG": case "ROTATE": case "OK": case "HOME":
+            case "MENU": case "BACK": case "BACK_LONG": case "MIC":
+            case "ROTATE": case "OK": case "HOME":
                 return true;
             default:
                 return false;

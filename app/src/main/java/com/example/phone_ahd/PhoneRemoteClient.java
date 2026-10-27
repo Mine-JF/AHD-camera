@@ -33,7 +33,9 @@ import java.util.concurrent.TimeUnit;
 final class PhoneRemoteClient {
     interface StatusListener { void onStatus(String status); }
     interface RoleListener { void onRoleChanged(boolean canControl); }
-    interface StateListener { void onStateChanged(boolean lightOn, boolean recording); }
+    interface StateListener {
+        void onStateChanged(boolean lightOn, boolean recording, boolean microphoneOn);
+    }
     private static final String TAG = "PhoneRemoteClient";
     private static final int MAGIC = 0x41484431;
     private static final int ROTATION_MARKER = 0x41484452;
@@ -88,7 +90,7 @@ final class PhoneRemoteClient {
         running = true;
         canControl = false;
         mainHandler.post(() -> {
-            if (connectionGeneration == generation) stateListener.onStateChanged(false, false);
+            if (connectionGeneration == generation) stateListener.onStateChanged(false, false, false);
         });
         videoRotationDegrees = 0;
         Log.i(TAG, "connect requested: host=" + host + ", controlPort=" + CONTROL_PORT
@@ -176,7 +178,7 @@ final class PhoneRemoteClient {
             if (connectionGeneration == clearedGeneration) {
                 preview.setAlpha(0f);
                 roleListener.onRoleChanged(false);
-                stateListener.onStateChanged(false, false);
+                stateListener.onStateChanged(false, false, false);
                 Log.i(TAG, "preview hidden after disconnect");
             }
         });
@@ -217,13 +219,17 @@ final class PhoneRemoteClient {
                     setControlRole(false, generation);
                 } else if (reply.startsWith("STATE:LIGHT=")) {
                     String[] fields = reply.substring("STATE:".length()).split(";");
-                    if (fields.length == 2 && ("LIGHT=0".equals(fields[0]) || "LIGHT=1".equals(fields[0]))
-                            && ("RECORD=0".equals(fields[1]) || "RECORD=1".equals(fields[1]))) {
+                    if ((fields.length == 2 || fields.length == 3)
+                            && ("LIGHT=0".equals(fields[0]) || "LIGHT=1".equals(fields[0]))
+                            && ("RECORD=0".equals(fields[1]) || "RECORD=1".equals(fields[1]))
+                            && (fields.length == 2 || "MIC=0".equals(fields[2])
+                                    || "MIC=1".equals(fields[2]))) {
                         boolean lightOn = "LIGHT=1".equals(fields[0]);
                         boolean recording = "RECORD=1".equals(fields[1]);
+                        boolean microphoneOn = fields.length == 3 && "MIC=1".equals(fields[2]);
                         mainHandler.post(() -> {
                             if (connectionGeneration == generation) {
-                                stateListener.onStateChanged(lightOn, recording);
+                                stateListener.onStateChanged(lightOn, recording, microphoneOn);
                             }
                         });
                     }

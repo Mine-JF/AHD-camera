@@ -71,7 +71,8 @@ public final class BoardRemoteApplication extends Application
     private String controlState() {
         Camera_view camera = lastCameraActivity;
         return "STATE:LIGHT=" + (camera != null && camera.isRemoteLightEnabled() ? "1" : "0")
-                + ";RECORD=" + (camera != null && camera.isRemoteRecording() ? "1" : "0");
+                + ";RECORD=" + (camera != null && camera.isRemoteRecording() ? "1" : "0")
+                + ";MIC=" + (camera != null && camera.isRemoteMicrophoneEnabled() ? "1" : "0");
     }
 
     private void dispatchOtherScreenCommand(Activity activity, String command) {

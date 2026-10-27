@@ -55,7 +55,14 @@
         <Button
             android:id="@+id/phone_back"
             style="@style/PhoneControlButton"
-            android:text="返回/麦克风" />
+            android:text="返回" />
+
+        <Button
+            android:id="@+id/phone_microphone"
+            style="@style/PhoneControlButton"
+            android:background="@drawable/phone_light_button"
+            android:onClick="onRemoteButtonClick"
+            android:text="麦克风" />
 
         <Button
             android:id="@+id/phone_rotate"
