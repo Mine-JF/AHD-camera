@@ -15,7 +15,7 @@
             android:layout_width="150dp"
             android:layout_height="150dp"
             android:layout_marginBottom="4dp"
-            android:alpha="0.82"
+            android:alpha="0.88"
             android:background="@drawable/phone_direction_ring">
 
             <Button
@@ -67,7 +67,7 @@
         <LinearLayout
             android:layout_width="220dp"
             android:layout_height="wrap_content"
-            android:alpha="0.84"
+            android:alpha="0.88"
             android:background="@drawable/phone_remote_overlay_panel"
             android:orientation="vertical"
             android:padding="5dp">
@@ -102,6 +102,7 @@
                 <Button
                     android:id="@+id/phone_light"
                     style="@style/PhoneControlButton"
+                    android:background="@drawable/phone_light_button"
                     android:onClick="onRemoteButtonClick"
                     android:text="补光灯" />
             </LinearLayout>
@@ -143,6 +144,7 @@
                 <Button
                     android:id="@+id/phone_record"
                     style="@style/PhoneControlButton"
+                    android:background="@drawable/phone_record_button"
                     android:onClick="onRemoteButtonClick"
                     android:text="● REC" />
             </LinearLayout>
@@ -155,7 +157,7 @@
         android:layout_height="38dp"
         android:layout_gravity="top|right"
         android:layout_margin="8dp"
-        android:background="@drawable/phone_remote_overlay_panel"
+        android:background="@drawable/phone_overlay_toggle_button"
         android:text="隐藏控件"
         android:textColor="#FFFFFF"
         android:textSize="11sp" />

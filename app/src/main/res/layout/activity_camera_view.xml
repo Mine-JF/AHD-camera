@@ -41,6 +41,14 @@
         </FrameLayout>
     </LinearLayout>
 
+    <include
+        android:id="@+id/camera_settings_overlay"
+        layout="@layout/view_settings_overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/status_text"
         android:layout_width="wrap_content"

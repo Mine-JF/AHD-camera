@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/settings_overlay"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/bg_settings_overlay"
+    android:clickable="true"
+    android:elevation="18dp"
+    android:orientation="vertical">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:gravity="center"
+        android:text="@string/settings_title"
+        android:textColor="@color/settings_text_primary"
+        android:textSize="30sp"
+        android:textStyle="bold" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/overlay_left_menu"
+            android:layout_width="200dp"
+            android:layout_height="match_parent"
+            android:background="@color/settings_sidebar_background"
+            android:overScrollMode="never" />
+
+        <FrameLayout
+            android:id="@+id/overlay_right_content"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:background="@color/settings_panel_background" />
+    </LinearLayout>
+</LinearLayout>

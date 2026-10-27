@@ -36,6 +36,7 @@
         <Button
             android:id="@+id/phone_light"
             style="@style/PhoneControlButton"
+            android:background="@drawable/phone_light_button"
             android:onClick="onRemoteButtonClick"
             android:text="补光灯" />
     </LinearLayout>
@@ -132,6 +133,7 @@
         <Button
             android:id="@+id/phone_record"
             style="@style/PhoneControlButton"
+            android:background="@drawable/phone_record_button"
             android:onClick="onRemoteButtonClick"
             android:text="● REC" />
     </LinearLayout>

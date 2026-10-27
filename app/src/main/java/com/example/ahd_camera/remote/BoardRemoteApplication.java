@@ -22,8 +22,10 @@ public final class BoardRemoteApplication extends Application
     private static final String TAG = "BoardRemoteApplication";
     private BoardRemoteServer remoteServer;
     private BoardDiscoveryServer discoveryServer;
-    private Activity currentActivity;
-    private Activity lastBoundActivity;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private volatile Activity currentActivity;
+    private volatile Activity lastBoundActivity;
+    private volatile Camera_view lastCameraActivity;
 
     @Override
     public void onCreate() {
@@ -31,7 +33,7 @@ public final class BoardRemoteApplication extends Application
         if (!"board".equals(BuildConfig.FLAVOR)) return;
         registerActivityLifecycleCallbacks(this);
         remoteServer = new BoardRemoteServer(new Handler(Looper.getMainLooper()),
-                this::dispatchRemoteCommand);
+                this::dispatchRemoteCommand, this::controlState);
         remoteServer.start();
         discoveryServer = new BoardDiscoveryServer(this);
         discoveryServer.start();
@@ -39,8 +41,18 @@ public final class BoardRemoteApplication extends Application
 
     private void dispatchRemoteCommand(String command) {
         Activity activity = currentActivity != null ? currentActivity : lastBoundActivity;
-        Log.i(TAG, "remote command=" + command + ", page="
-                + (activity == null ? "none" : activity.getClass().getSimpleName()));
+        // Direction commands may arrive on the control socket thread. Keep menu
+        // navigation on the UI thread, but let camera motor commands bypass it.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            if (activity instanceof Camera_view
+                    && ((Camera_view) activity).handleRemoteDirectionCommand(command)) return;
+            mainHandler.post(() -> dispatchRemoteCommand(command));
+            return;
+        }
+        if (!command.endsWith("_KEEPALIVE")) {
+            Log.i(TAG, "remote command=" + command + ", page="
+                    + (activity == null ? "none" : activity.getClass().getSimpleName()));
+        }
         if (activity instanceof Camera_view) {
             ((Camera_view) activity).handleRemoteCommand(command);
         } else if (activity instanceof Settings) {
@@ -54,6 +66,12 @@ public final class BoardRemoteApplication extends Application
         } else {
             Log.w(TAG, "command without resumed board page: " + command);
         }
+    }
+
+    private String controlState() {
+        Camera_view camera = lastCameraActivity;
+        return "STATE:LIGHT=" + (camera != null && camera.isRemoteLightEnabled() ? "1" : "0")
+                + ";RECORD=" + (camera != null && camera.isRemoteRecording() ? "1" : "0");
     }
 
     private void dispatchOtherScreenCommand(Activity activity, String command) {
@@ -100,6 +118,7 @@ public final class BoardRemoteApplication extends Application
                 + ", instance=" + System.identityHashCode(activity));
         if (remoteServer == null) return;
         if (activity instanceof Camera_view) {
+            lastCameraActivity = (Camera_view) activity;
             remoteServer.setPreviewRotation(((Camera_view) activity).getPreviewRotationDegrees());
             remoteServer.setPreviewViews(activity.findViewById(R.id.camera_container),
                     activity.findViewById(R.id.camera_hud));
@@ -111,6 +130,17 @@ public final class BoardRemoteApplication extends Application
 
     public void setPreviewRotation(int degrees) {
         if (remoteServer != null) remoteServer.setPreviewRotation(degrees);
+    }
+
+    /** Mirror the complete camera window while its settings panel is open. */
+    public void setCameraSettingsOverlayVisible(Camera_view camera, boolean visible) {
+        if (remoteServer == null || currentActivity != camera) return;
+        if (visible) {
+            remoteServer.setPreviewViews(camera.findViewById(R.id.main), null);
+        } else {
+            remoteServer.setPreviewViews(camera.findViewById(R.id.camera_container),
+                    camera.findViewById(R.id.camera_hud));
+        }
     }
 
     @Override
@@ -140,6 +170,7 @@ public final class BoardRemoteApplication extends Application
     }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
     @Override public void onActivityDestroyed(Activity activity) {
+        if (lastCameraActivity == activity) lastCameraActivity = null;
         if (lastBoundActivity == activity) lastBoundActivity = null;
         if (currentActivity == activity) {
             currentActivity = null;

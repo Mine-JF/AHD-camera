@@ -76,6 +76,8 @@ std::string gLastError;
 std::mutex gMotorMutex;
 int gMotorFd = -1;
 uint8_t gMotorSequence = 0;
+// Keep fragmented counter reports across short reads. Guarded by gMotorMutex.
+std::vector<uint8_t> gCounterReceived;
 
 struct MappedBuffer {
     void* start = nullptr;
@@ -238,6 +240,7 @@ void CloseDevice(CameraContext* context) {
 }
 
 void CloseMotorLocked() {
+    gCounterReceived.clear();
     if (gMotorFd >= 0) {
         close(gMotorFd);
         gMotorFd = -1;
@@ -320,8 +323,10 @@ bool ReadCounterValueLocked(int32_t* counterValue) {
         return false;
     }
 
-    std::vector<uint8_t> received;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
+    auto& received = gCounterReceived;
+    // Do not hold the shared serial lock for hundreds of milliseconds: motor
+    // start/stop commands must be able to reach the MCU promptly.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(25);
     while (std::chrono::steady_clock::now() < deadline) {
         const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
                 deadline - std::chrono::steady_clock::now()).count();
@@ -1086,6 +1091,7 @@ Java_com_example_ahd_1camera_V4l2CameraNative_nativeMotorOpen(
         return JNI_FALSE;
     }
     gMotorSequence = 0;
+    gCounterReceived.clear();
     LogPrint(ANDROID_LOG_INFO, "Motor serial opened: %s at 9600 8N1", path.c_str());
     return JNI_TRUE;
 }

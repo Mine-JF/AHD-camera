@@ -48,6 +48,8 @@ android {
             dimension 'device'
             applicationIdSuffix '.phone'
             versionNameSuffix '-phone'
+            // Android 10 (API 29) phones can run the remote client.
+            minSdk 29
         }
     }
 

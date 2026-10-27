@@ -1,6 +1,8 @@
 package com.example.ahd_camera.remote;
 
 import android.os.Handler;
+import android.os.Process;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.View;
 
@@ -13,34 +15,70 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/** First LAN prototype: one TCP control client and one H.264 video client. */
+/** One control owner; additional phones may watch and are promoted when the owner leaves. */
 final class BoardRemoteServer {
     interface CommandListener {
         void onCommand(String command);
+    }
+
+    interface ControlStateProvider {
+        String getState();
     }
 
     static final int CONTROL_PORT = 39001;
     static final int VIDEO_PORT = 39002;
     private static final String TAG = "BoardRemoteServer";
     private static final long HEARTBEAT_TIMEOUT_MS = 10000;
+    private static final int MAX_VIDEO_VIEWERS = 4;
 
     private final Handler mainHandler;
     private volatile View previewRoot;
     private volatile View overlay;
     private volatile int previewRotationDegrees;
     private final CommandListener listener;
+    private final ControlStateProvider stateProvider;
     private final AtomicBoolean running = new AtomicBoolean();
     private final AtomicBoolean videoPaused = new AtomicBoolean(true);
     private ServerSocket controlServer;
     private ServerSocket videoServer;
-    private volatile Socket controlClient;
-    private volatile Socket videoClient;
+    private final Object controlLock = new Object();
+    private final Set<ControlSession> controlSessions = new LinkedHashSet<>();
+    private final Set<Socket> videoClients = ConcurrentHashMap.newKeySet();
+    private ControlSession controlOwner;
 
-    BoardRemoteServer(Handler mainHandler, CommandListener listener) {
+    private static final class ControlSession {
+        final Socket socket;
+        final BufferedWriter output;
+        final Object writeLock = new Object();
+        volatile boolean controller;
+
+        ControlSession(Socket socket) throws IOException {
+            this.socket = socket;
+            output = new BufferedWriter(new OutputStreamWriter(
+                    socket.getOutputStream(), StandardCharsets.UTF_8));
+        }
+
+        void reply(String line) throws IOException {
+            synchronized (writeLock) {
+                output.write(line);
+                output.write('\n');
+                output.flush();
+            }
+        }
+    }
+
+    BoardRemoteServer(Handler mainHandler, CommandListener listener,
+            ControlStateProvider stateProvider) {
         this.mainHandler = mainHandler;
         this.listener = listener;
+        this.stateProvider = stateProvider;
     }
 
     void setPreviewViews(View previewRoot, View overlay) {
@@ -72,8 +110,7 @@ final class BoardRemoteServer {
         if (paused) {
             // A paused stream leaves the decoder displaying its final frame. Closing both
             // channels tells the phone immediately that the board has no foreground UI.
-            close(videoClient);
-            close(controlClient);
+            closeAllClients();
             Log.i(TAG, "board backgrounded: remote clients disconnected");
         }
     }
@@ -81,8 +118,7 @@ final class BoardRemoteServer {
     void stop() {
         Log.i(TAG, "stopping LAN server");
         running.set(false);
-        close(controlClient);
-        close(videoClient);
+        closeAllClients();
         close(controlServer);
         close(videoServer);
     }
@@ -101,16 +137,31 @@ final class BoardRemoteServer {
                         close(socket);
                         continue;
                     }
-                    Socket previous = controlClient;
-                    controlClient = socket;
-                    if (previous != null) {
-                        close(previous);
-                        mainHandler.post(() -> listener.onCommand("STOP_ALL"));
-                    }
                     socket.setSoTimeout(1000);
                     socket.setTcpNoDelay(true);
-                    Log.i(TAG, "control connected: " + socket.getInetAddress());
-                    new Thread(() -> serveControlClient(socket), "remote-control-client").start();
+                    ControlSession session = new ControlSession(socket);
+                    synchronized (controlLock) {
+                        controlSessions.add(session);
+                        if (controlOwner == null) {
+                            controlOwner = session;
+                            session.controller = true;
+                        }
+                    }
+                    try {
+                        session.reply(session.controller ? "ROLE:CONTROL" : "ROLE:VIEW_ONLY");
+                        session.reply(stateProvider.getState());
+                        Log.i(TAG, "control connected: " + socket.getInetAddress()
+                                + ", role=" + (session.controller ? "CONTROL" : "VIEW_ONLY"));
+                        new Thread(() -> {
+                            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY);
+                            serveControlClient(session);
+                        },
+                                "remote-control-client").start();
+                    } catch (IOException error) {
+                        removeControlSession(session);
+                        close(socket);
+                        throw error;
+                    }
                 } catch (IOException error) {
                     if (running.get()) Log.w(TAG, "control accept failed", error);
                 }
@@ -123,29 +174,26 @@ final class BoardRemoteServer {
         }
     }
 
-    private void serveControlClient(Socket socket) {
-        try (Socket client = socket) {
-            handleControlClient(client);
+    private void serveControlClient(ControlSession session) {
+        try (Socket client = session.socket) {
+            handleControlClient(session);
         } catch (IOException error) {
-            if (running.get() && controlClient == socket) {
+            if (running.get() && !videoPaused.get()) {
                 Log.w(TAG, "control connection ended", error);
             }
         } finally {
-            Log.i(TAG, "control client disconnected");
-            if (controlClient == socket) {
-                controlClient = null;
-                if (running.get()) mainHandler.post(() -> listener.onCommand("STOP_ALL"));
-            }
+            Log.i(TAG, "control client disconnected: " + session.socket.getInetAddress());
+            removeControlSession(session);
         }
     }
 
-    private void handleControlClient(Socket socket) throws IOException {
+    private void handleControlClient(ControlSession session) throws IOException {
+        Socket socket = session.socket;
+        AtomicBoolean uiTransitionPending = new AtomicBoolean();
         BufferedReader input = new BufferedReader(new InputStreamReader(
                 socket.getInputStream(), StandardCharsets.UTF_8));
-        BufferedWriter output = new BufferedWriter(new OutputStreamWriter(
-                socket.getOutputStream(), StandardCharsets.UTF_8));
         long lastHeartbeat = android.os.SystemClock.elapsedRealtime();
-        while (running.get() && controlClient == socket) {
+        while (running.get() && !socket.isClosed()) {
             try {
                 String line = input.readLine();
                 if (line == null) {
@@ -154,18 +202,38 @@ final class BoardRemoteServer {
                 }
                 if ("PING".equals(line)) {
                     lastHeartbeat = android.os.SystemClock.elapsedRealtime();
-                    output.write("PONG\n");
-                    output.flush();
+                    session.reply("PONG");
+                    session.reply(stateProvider.getState());
                 } else if (isAllowed(line)) {
-                    Log.i(TAG, "control command received: " + line);
+                    long receivedAt = SystemClock.elapsedRealtimeNanos();
                     lastHeartbeat = android.os.SystemClock.elapsedRealtime();
-                    mainHandler.post(() -> listener.onCommand(line));
-                    output.write("OK\n");
-                    output.flush();
+                    if (!session.controller) {
+                        session.reply("READ_ONLY");
+                        continue;
+                    }
+                    if (!line.endsWith("_KEEPALIVE")) {
+                        Log.i(TAG, "control command received: " + line);
+                    }
+                    if (isDirectionCommand(line) && !uiTransitionPending.get()) {
+                        listener.onCommand(line);
+                        if (!line.endsWith("_KEEPALIVE")) {
+                            Log.i(TAG, "control timing " + line + ": dispatchMs="
+                                    + (SystemClock.elapsedRealtimeNanos() - receivedAt) / 1_000_000f);
+                        }
+                    } else {
+                        if ("MENU".equals(line)) uiTransitionPending.set(true);
+                        mainHandler.post(() -> {
+                            try {
+                                listener.onCommand(line);
+                            } finally {
+                                if ("MENU".equals(line)) uiTransitionPending.set(false);
+                            }
+                        });
+                    }
+                    session.reply("OK");
                 } else {
                     Log.w(TAG, "control command rejected: " + line);
-                    output.write("ERR\n");
-                    output.flush();
+                    session.reply("ERR");
                 }
             } catch (SocketTimeoutException timeout) {
                 if (android.os.SystemClock.elapsedRealtime() - lastHeartbeat > HEARTBEAT_TIMEOUT_MS) {
@@ -176,12 +244,67 @@ final class BoardRemoteServer {
         }
     }
 
+    private void removeControlSession(ControlSession session) {
+        ControlSession promoted = null;
+        boolean ownerLeft;
+        synchronized (controlLock) {
+            if (!controlSessions.remove(session)) return;
+            ownerLeft = controlOwner == session;
+            if (ownerLeft) {
+                controlOwner = null;
+                session.controller = false;
+                if (running.get() && !videoPaused.get()) {
+                    for (ControlSession candidate : controlSessions) {
+                        if (!candidate.socket.isClosed()) {
+                            controlOwner = candidate;
+                            candidate.controller = true;
+                            promoted = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (ownerLeft && running.get()) {
+            mainHandler.post(() -> listener.onCommand("STOP_ALL"));
+        }
+        if (promoted != null) {
+            try {
+                promoted.reply("ROLE:CONTROL");
+                Log.i(TAG, "promoted viewer to controller: "
+                        + promoted.socket.getInetAddress());
+            } catch (IOException error) {
+                close(promoted.socket);
+            }
+        }
+    }
+
+    private void closeAllClients() {
+        List<Socket> clients = new ArrayList<>();
+        boolean hadController;
+        synchronized (controlLock) {
+            hadController = controlOwner != null;
+            for (ControlSession session : controlSessions) clients.add(session.socket);
+            controlSessions.clear();
+            controlOwner = null;
+        }
+        clients.addAll(videoClients);
+        for (Socket socket : clients) close(socket);
+        if (hadController && running.get()) {
+            mainHandler.post(() -> listener.onCommand("STOP_ALL"));
+        }
+    }
+
     private static boolean isAllowed(String command) {
         switch (command) {
             case "UP_DOWN": case "UP_UP":
+            case "UP_KEEPALIVE":
             case "DOWN_DOWN": case "DOWN_UP":
+            case "DOWN_KEEPALIVE":
             case "LEFT_DOWN": case "LEFT_UP":
+            case "LEFT_KEEPALIVE":
             case "RIGHT_DOWN": case "RIGHT_UP":
+            case "RIGHT_KEEPALIVE":
             case "FOCUS_PLUS_DOWN": case "FOCUS_PLUS_UP":
             case "FOCUS_MINUS_DOWN": case "FOCUS_MINUS_UP":
             case "PHOTO": case "RECORD": case "STOP_ALL":
@@ -191,6 +314,11 @@ final class BoardRemoteServer {
             default:
                 return false;
         }
+    }
+
+    private static boolean isDirectionCommand(String command) {
+        return command.startsWith("UP_") || command.startsWith("DOWN_")
+                || command.startsWith("LEFT_") || command.startsWith("RIGHT_");
     }
 
     private void serveVideo() {
@@ -207,9 +335,12 @@ final class BoardRemoteServer {
                         close(socket);
                         continue;
                     }
-                    Socket previous = videoClient;
-                    videoClient = socket;
-                    close(previous);
+                    if (videoClients.size() >= MAX_VIDEO_VIEWERS) {
+                        Log.w(TAG, "video viewer limit reached; reject " + socket.getInetAddress());
+                        close(socket);
+                        continue;
+                    }
+                    videoClients.add(socket);
                     socket.setTcpNoDelay(true);
                     Log.i(TAG, "video connected: " + socket.getInetAddress());
                     new Thread(() -> streamVideoClient(socket), "remote-video-client").start();
@@ -231,12 +362,12 @@ final class BoardRemoteServer {
                     () -> previewRotationDegrees)
                     .stream(client, running, videoPaused);
         } catch (IOException | RuntimeException error) {
-            if (running.get() && videoClient == socket) {
+            if (running.get() && videoClients.contains(socket)) {
                 Log.w(TAG, "video connection ended", error);
             }
         } finally {
             Log.i(TAG, "video client disconnected");
-            if (videoClient == socket) videoClient = null;
+            videoClients.remove(socket);
         }
     }
 

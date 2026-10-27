@@ -9,12 +9,14 @@ import com.example.ahd_camera.device.DistanceCounterController;
 import com.example.ahd_camera.device.DistanceUnitPreference;
 import com.example.ahd_camera.device.MicrophoneController;
 import com.example.ahd_camera.device.MotorController;
+import com.example.ahd_camera.device.RemoteMotorSafetyController;
 import com.example.ahd_camera.input.HardwareKeySourceFilter;
 import com.example.ahd_camera.media.GalleryActivity;
 import com.example.ahd_camera.media.PhotoCaptureController;
 import com.example.ahd_camera.media.VideoRecorderController;
 import com.example.ahd_camera.remote.BoardRemoteApplication;
 import com.example.ahd_camera.storage.StorageUtils;
+import com.example.Settings.SettingsOverlayController;
 
 import android.Manifest;
 import android.content.Intent;
@@ -81,7 +83,11 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private PhotoCaptureController photoCaptureController;
     private VideoRecorderController videoRecorderController;
     private MotorController motorController;
-    private boolean remoteMenuOpen;
+    private RemoteMotorSafetyController remoteMotorSafety;
+    private volatile boolean remoteMenuOpen;
+    private SettingsOverlayController settingsOverlay;
+    private boolean restoreSettingsOverlay;
+    private volatile boolean remoteMotorEnabled;
     private DistanceCounterController distanceCounterController;
     private String[] lastSelectedCameraIds = new String[0];
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -97,7 +103,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
     private int previewRotationDegrees = 0;
     private boolean backKeyDown;
     private boolean backKeyLongPressHandled;
-    private boolean lightEnabled;
+    private volatile boolean lightEnabled;
     // VCM 没有位置反馈；该值仅表示当前页面已成功发送的 PWM 档位。
     private int focusLevel;
     private int focusAdjustDelta;
@@ -176,6 +182,18 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         Utils.prepareFullscreenWindow(getWindow());
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_camera_view);
+        View overlayView = findViewById(R.id.camera_settings_overlay);
+        settingsOverlay = new SettingsOverlayController(this, overlayView);
+        restoreSettingsOverlay = savedInstanceState != null
+                && savedInstanceState.getBoolean("settings_overlay_open", false);
+        View root = findViewById(R.id.main);
+        root.post(() -> {
+            FrameLayout.LayoutParams params = (FrameLayout.LayoutParams) overlayView.getLayoutParams();
+            params.width = Math.round(root.getWidth() * 0.70f);
+            params.height = Math.round(root.getHeight() * 0.76f);
+            params.gravity = Gravity.CENTER;
+            overlayView.setLayoutParams(params);
+        });
         nativeBackendAvailable = V4l2CameraNative.isAvailable();
         nativeBackendSummary = V4l2CameraNative.getAvailabilitySummary();
         android.util.Log.d(TAG, "onCreate: nativeBackendAvailable=" + nativeBackendAvailable
@@ -185,6 +203,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         photoCaptureController = new PhotoCaptureController(this);
         videoRecorderController = new VideoRecorderController(this);
         motorController = new MotorController();
+        remoteMotorSafety = new RemoteMotorSafetyController(motorController);
         distanceCounterController = new DistanceCounterController(motorController, counterValue -> {
             float distanceMeters = counterValue * METERS_PER_COUNTER_STEP;
             hudController.setDistanceMeters(distanceMeters);
@@ -249,13 +268,18 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         cameraController.startBackgroundThread();
         ensureCameraPermissionAndStart();
         cameraController.startAvailabilityMonitor();
-        remoteMenuOpen = false;
+        remoteMotorEnabled = true;
+        if (restoreSettingsOverlay) {
+            restoreSettingsOverlay = false;
+            openSettings();
+        }
     }
 
     // 页面离开前台时释放摄像头，避免资源占用和重复打开。
     @Override
     protected void onPause() {
         android.util.Log.d(TAG, "onPause: release camera resources");
+        remoteMotorEnabled = false;
         cameraFlowGeneration++;
         mainHandler.removeCallbacks(refreshCameraRunnable);
         mainHandler.removeCallbacks(hudRefreshRunnable);
@@ -272,7 +296,7 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             android.util.Log.d(TAG, "onPause: distanceReceiver unregistered");
         }
         cameraController.stopAvailabilityMonitor();
-        motorController.stopAndClose();
+        remoteMotorSafety.stopAllAndClose();
         cameraController.closeAllCameras();
         cameraController.stopBackgroundThread();
         if (videoRecorderController.isRecording()) {
@@ -282,28 +306,39 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         super.onPause();
     }
 
+    @Override
+    protected void onDestroy() {
+        settingsOverlay.hide();
+        remoteMotorSafety.shutdown();
+        super.onDestroy();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        outState.putBoolean("settings_overlay_open", remoteMenuOpen);
+        super.onSaveInstanceState(outState);
+    }
+
     public void handleRemoteCommand(String command) {
-        android.util.Log.i(TAG, "handleRemoteCommand: " + command);
+        if (!command.endsWith("_KEEPALIVE")) {
+            android.util.Log.i(TAG, "handleRemoteCommand: " + command);
+        }
         if (remoteMenuOpen && (command.equals("OK") || command.equals("HOME")
                 || command.equals("BACK") || command.equals("BACK_LONG")
                 || command.startsWith("UP_") || command.startsWith("DOWN_")
                 || command.startsWith("LEFT_") || command.startsWith("RIGHT_"))) {
-            com.example.Settings.Settings.dispatchRemoteCommand(command);
+            settingsOverlay.handleCommand(command);
+            remoteMenuOpen = settingsOverlay.isVisible();
             return;
         }
         if (remoteMenuOpen && !command.equals("MENU") && !command.equals("STOP_ALL")) {
             // Board hardware shortcuts do not control the preview while Settings is foreground.
             return;
         }
+        if (!remoteMotorEnabled && (command.startsWith("UP_") || command.startsWith("DOWN_")
+                || command.startsWith("LEFT_") || command.startsWith("RIGHT_"))) return;
+        if (handleRemoteDirectionCommand(command)) return;
         switch (command) {
-            case "UP_DOWN": motorController.move(MotorController.COMMAND_UP); break;
-            case "UP_UP": motorController.stopForMove(MotorController.COMMAND_UP); break;
-            case "DOWN_DOWN": motorController.move(MotorController.COMMAND_DOWN); break;
-            case "DOWN_UP": motorController.stopForMove(MotorController.COMMAND_DOWN); break;
-            case "LEFT_DOWN": motorController.move(MotorController.COMMAND_LEFT); break;
-            case "LEFT_UP": motorController.stopForMove(MotorController.COMMAND_LEFT); break;
-            case "RIGHT_DOWN": motorController.move(MotorController.COMMAND_RIGHT); break;
-            case "RIGHT_UP": motorController.stopForMove(MotorController.COMMAND_RIGHT); break;
             case "FOCUS_PLUS_DOWN":
                 startContinuousFocusAdjustment(KeyEvent.KEYCODE_BUTTON_C, 1);
                 break;
@@ -332,15 +367,8 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             case "RECORD": toggleVideoRecording(); break;
             case "MENU":
                 if (remoteMenuOpen) {
-                    android.util.Log.i(TAG, "remote MENU: return from Settings to preview");
-                    Intent backToPreview = new Intent(this, Camera_view.class);
-                    backToPreview.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP
-                            | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-                    startActivity(backToPreview);
+                    closeSettings();
                 } else {
-                    android.util.Log.i(TAG, "remote MENU: open Settings and retain connection");
-                    stopContinuousFocusAdjustment();
-                    remoteMenuOpen = true;
                     openSettings();
                 }
                 break;
@@ -358,10 +386,30 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
             case "ROTATE": rotatePreviewClockwise(); break;
             case "STOP_ALL":
                 stopContinuousFocusAdjustment();
-                motorController.stopAndClose();
+                remoteMotorSafety.stopAllAndClose();
                 focusLevel = 0;
                 break;
             default: android.util.Log.w(TAG, "Unknown remote command: " + command);
+        }
+    }
+
+    /** Direction-only path safe to call from the LAN socket thread. */
+    public boolean handleRemoteDirectionCommand(String command) {
+        if (remoteMenuOpen || !remoteMotorEnabled) return false;
+        switch (command) {
+            case "UP_DOWN": remoteMotorSafety.start(MotorController.COMMAND_UP); return true;
+            case "UP_KEEPALIVE": remoteMotorSafety.keepAlive(MotorController.COMMAND_UP); return true;
+            case "UP_UP": remoteMotorSafety.stop(MotorController.COMMAND_UP); return true;
+            case "DOWN_DOWN": remoteMotorSafety.start(MotorController.COMMAND_DOWN); return true;
+            case "DOWN_KEEPALIVE": remoteMotorSafety.keepAlive(MotorController.COMMAND_DOWN); return true;
+            case "DOWN_UP": remoteMotorSafety.stop(MotorController.COMMAND_DOWN); return true;
+            case "LEFT_DOWN": remoteMotorSafety.start(MotorController.COMMAND_LEFT); return true;
+            case "LEFT_KEEPALIVE": remoteMotorSafety.keepAlive(MotorController.COMMAND_LEFT); return true;
+            case "LEFT_UP": remoteMotorSafety.stop(MotorController.COMMAND_LEFT); return true;
+            case "RIGHT_DOWN": remoteMotorSafety.start(MotorController.COMMAND_RIGHT); return true;
+            case "RIGHT_KEEPALIVE": remoteMotorSafety.keepAlive(MotorController.COMMAND_RIGHT); return true;
+            case "RIGHT_UP": remoteMotorSafety.stop(MotorController.COMMAND_RIGHT); return true;
+            default: return false;
         }
     }
 
@@ -518,10 +566,20 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         runOnUiThread(() -> statusText.setVisibility(View.GONE));
     }
 
-    // 快捷键：按 ESC 进入设置页面。
+    // 设置面板与 TextureView 保持在同一 Activity，预览和推流不中断。
     private void openSettings() {
-        android.util.Log.d(TAG, "openSettings: launch settings page");
-        startActivity(new Intent(this, com.example.Settings.Settings.class));
+        stopContinuousFocusAdjustment();
+        remoteMotorSafety.stopAllAndClose();
+        settingsOverlay.show();
+        remoteMenuOpen = true;
+        ((BoardRemoteApplication) getApplication()).setCameraSettingsOverlayVisible(this, true);
+    }
+
+    private void closeSettings() {
+        settingsOverlay.hide();
+        remoteMenuOpen = false;
+        ((BoardRemoteApplication) getApplication()).setCameraSettingsOverlayVisible(this, false);
+        focusHardwareKeyboardEditor();
     }
 
     /**
@@ -544,7 +602,29 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
         }
         // MENU 的 DOWN/UP 都由页面消费，不能把 UP 交给当前焦点当作确认键。
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_3) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN) openSettings();
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (remoteMenuOpen) closeSettings(); else openSettings();
+            }
+            return true;
+        }
+        if (remoteMenuOpen) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                String menuCommand = null;
+                switch (event.getKeyCode()) {
+                    case KeyEvent.KEYCODE_BUTTON_7: menuCommand = "OK"; break;
+                    case KeyEvent.KEYCODE_BUTTON_Z:
+                    case KeyEvent.KEYCODE_ESCAPE: menuCommand = "BACK"; break;
+                    case KeyEvent.KEYCODE_BUTTON_10: menuCommand = "UP_DOWN"; break;
+                    case KeyEvent.KEYCODE_BUTTON_11: menuCommand = "DOWN_DOWN"; break;
+                    case KeyEvent.KEYCODE_BUTTON_12: menuCommand = "LEFT_DOWN"; break;
+                    case KeyEvent.KEYCODE_BUTTON_13: menuCommand = "RIGHT_DOWN"; break;
+                    default: break;
+                }
+                if (menuCommand != null) {
+                    settingsOverlay.handleCommand(menuCommand);
+                    remoteMenuOpen = settingsOverlay.isVisible();
+                }
+            }
             return true;
         }
         if (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_7) {
@@ -932,6 +1012,15 @@ public class Camera_view extends AppCompatActivity implements CameraStatusCallba
                 });
             }
         });
+    }
+
+    /** Snapshot read by the LAN control connection for phone button indicators. */
+    public boolean isRemoteLightEnabled() {
+        return lightEnabled;
+    }
+
+    public boolean isRemoteRecording() {
+        return videoRecorderController != null && videoRecorderController.isRecording();
     }
 
     private boolean handleExternalKeyboardInput(KeyEvent event) {

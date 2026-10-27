@@ -14,9 +14,23 @@
         <item name="android:background">@drawable/phone_control_button</item>
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:textAllCaps">false</item>
+        <item name="android:textSize">13sp</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:minHeight">0dp</item>
+        <item name="android:minWidth">0dp</item>
+        <item name="android:paddingStart">4dp</item>
+        <item name="android:paddingEnd">4dp</item>
+    </style>
+    <style name="PhonePrimaryButton" parent="PhoneControlButton">
+        <item name="android:background">@drawable/phone_primary_button</item>
+        <item name="android:textColor">#071522</item>
+    </style>
+    <style name="PhoneHeaderButton" parent="PhoneControlButton">
+        <item name="android:layout_margin">2dp</item>
+        <item name="android:textSize">12sp</item>
     </style>
     <style name="PhoneDirectionButton">
-        <item name="android:background">@android:color/transparent</item>
+        <item name="android:background">@drawable/phone_direction_button</item>
         <item name="android:textColor">#FFFFFF</item>
         <item name="android:textSize">20sp</item>
         <item name="android:textAllCaps">false</item>

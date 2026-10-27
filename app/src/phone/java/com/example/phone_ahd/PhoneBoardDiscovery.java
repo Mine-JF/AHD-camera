@@ -2,6 +2,9 @@ package com.example.phone_ahd;
 
 import android.content.Context;
 import android.net.DhcpInfo;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.nsd.NsdManager;
 import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
@@ -14,12 +17,17 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InterfaceAddress;
+import java.net.NetworkInterface;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Enumeration;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -53,14 +61,15 @@ final class PhoneBoardDiscovery {
         if (current != null) current.close();
     }
 
-    void discover(Callback callback) {
+    void discover(String knownHost, Callback callback) {
         cancel();
         int requestGeneration = generation;
         Log.i(TAG, "start discovery, generation=" + requestGeneration);
-        new Thread(() -> runDiscovery(requestGeneration, callback), "phone-board-discovery").start();
+        new Thread(() -> runDiscovery(requestGeneration, knownHost, callback),
+                "phone-board-discovery").start();
     }
 
-    private void runDiscovery(int requestGeneration, Callback callback) {
+    private void runDiscovery(int requestGeneration, String knownHost, Callback callback) {
         Map<String, Board> found = new ConcurrentHashMap<>();
         NsdManager nsd = context.getSystemService(NsdManager.class);
         AtomicBoolean finished = new AtomicBoolean();
@@ -82,8 +91,8 @@ final class PhoneBoardDiscovery {
                         }
                         @Override public void onServiceResolved(NsdServiceInfo info) {
                             InetAddress address = info.getHost();
-                            if (!finished.get() && address instanceof Inet4Address
-                                    && info.getPort() == 39001) {
+                            if (!finished.get() && address != null && !address.isLoopbackAddress()
+                                    && !address.isLinkLocalAddress() && info.getPort() == 39001) {
                                 String host = address.getHostAddress();
                                 found.put(host, new Board(info.getServiceName(), host));
                                 Log.i(TAG, "mDNS found " + info.getServiceName() + " at " + host);
@@ -136,8 +145,25 @@ final class PhoneBoardDiscovery {
             Log.i(TAG, "UDP socket ready: localPort=" + udp.getLocalPort());
             udp.setBroadcast(true);
             udp.setSoTimeout(350);
+            ConnectivityManager connectivity = context.getSystemService(ConnectivityManager.class);
+            if (connectivity != null) {
+                for (Network network : connectivity.getAllNetworks()) {
+                    NetworkCapabilities capabilities = connectivity.getNetworkCapabilities(network);
+                    if (capabilities != null && capabilities.hasTransport(
+                            NetworkCapabilities.TRANSPORT_WIFI)) {
+                        try {
+                            network.bindSocket(udp);
+                            Log.i(TAG, "UDP discovery bound to Wi-Fi network=" + network);
+                        } catch (IOException | RuntimeException error) {
+                            Log.w(TAG, "Unable to bind UDP discovery to Wi-Fi", error);
+                        }
+                        break;
+                    }
+                }
+            }
             byte[] request = REQUEST.getBytes(StandardCharsets.UTF_8);
-            sendRequest(udp, request, InetAddress.getByName("255.255.255.255"));
+            Set<InetAddress> targets = new LinkedHashSet<>();
+            targets.add(InetAddress.getByName("255.255.255.255"));
             if (wifi != null) {
                 try {
                     DhcpInfo dhcp = wifi.getDhcpInfo();
@@ -145,7 +171,7 @@ final class PhoneBoardDiscovery {
                         int broadcast = (dhcp.ipAddress & dhcp.netmask) | ~dhcp.netmask;
                         byte[] address = new byte[]{(byte) broadcast, (byte) (broadcast >> 8),
                                 (byte) (broadcast >> 16), (byte) (broadcast >> 24)};
-                        sendRequest(udp, request, InetAddress.getByAddress(address));
+                        targets.add(InetAddress.getByAddress(address));
                         Log.i(TAG, "Wi-Fi broadcast=" + InetAddress.getByAddress(address)
                                 .getHostAddress());
                     } else {
@@ -155,10 +181,34 @@ final class PhoneBoardDiscovery {
                     Log.w(TAG, "Wi-Fi subnet discovery unavailable", error);
                 }
             }
-            long deadline = android.os.SystemClock.elapsedRealtime() + 4000;
+            // DHCP data is often empty on newer Android versions. Use each active
+            // interface's real IPv4 broadcast address as an additional target.
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces != null && interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                if (!networkInterface.isUp() || networkInterface.isLoopback()) continue;
+                for (InterfaceAddress interfaceAddress : networkInterface.getInterfaceAddresses()) {
+                    if (interfaceAddress.getAddress() instanceof Inet4Address
+                            && interfaceAddress.getBroadcast() != null) {
+                        targets.add(interfaceAddress.getBroadcast());
+                    }
+                }
+            }
+            if (knownHost != null && !knownHost.trim().isEmpty()) {
+                try { targets.add(InetAddress.getByName(knownHost.trim())); }
+                catch (IOException error) { Log.w(TAG, "Known host unavailable: " + knownHost, error); }
+            }
+            Log.i(TAG, "UDP discovery targets=" + targets);
+            long deadline = android.os.SystemClock.elapsedRealtime() + 5500;
+            long nextQueryAt = 0;
             byte[] bytes = new byte[256];
             while (generation == requestGeneration
                     && android.os.SystemClock.elapsedRealtime() < deadline) {
+                long now = android.os.SystemClock.elapsedRealtime();
+                if (now >= nextQueryAt) {
+                    for (InetAddress target : targets) sendRequest(udp, request, target);
+                    nextQueryAt = now + 900;
+                }
                 DatagramPacket response = new DatagramPacket(bytes, bytes.length);
                 try {
                     udp.receive(response);

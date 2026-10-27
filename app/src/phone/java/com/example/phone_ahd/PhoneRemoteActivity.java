@@ -19,16 +19,18 @@ import com.example.ahd_camera.R;
 public final class PhoneRemoteActivity extends Activity {
     private static final String STATE_RECONNECT_HOST = "reconnect_host";
     private static final String TAG = "PhoneRemoteActivity";
+    private static final long MOTOR_KEEPALIVE_MS = 200L;
     private PhoneRemoteClient client;
     private PhoneBoardDiscovery discovery;
     private EditText boardIp;
     private TextView status;
     private String lastRequestedHost;
+    private boolean allowAutoReconnect;
     private final Handler reconnectHandler = new Handler(Looper.getMainLooper());
     private boolean started;
     private int searchNumber;
     private final Runnable reconnectRunnable = () -> {
-        if (started && lastRequestedHost != null && !client.isRunning()) {
+        if (started && allowAutoReconnect && lastRequestedHost != null && !client.isRunning()) {
             status.setText("正在重新连接 " + lastRequestedHost);
             client.connect(lastRequestedHost);
         }
@@ -47,8 +49,9 @@ public final class PhoneRemoteActivity extends Activity {
         status.setMovementMethod(new ScrollingMovementMethod());
         TextureView preview = findViewById(R.id.phone_preview);
         String savedHost = getPreferences(0).getString("board_ip", "").trim();
+        allowAutoReconnect = getPreferences(0).getBoolean("auto_connect", true);
         boardIp.setText(savedHost);
-        if (!savedHost.isEmpty()) lastRequestedHost = savedHost;
+        if (allowAutoReconnect && !savedHost.isEmpty()) lastRequestedHost = savedHost;
         Log.i(TAG, "created: savedHost=" + savedHost + ", restored=" + (state != null));
         discovery = new PhoneBoardDiscovery(this);
         client = new PhoneRemoteClient(preview, text -> {
@@ -60,7 +63,7 @@ public final class PhoneRemoteActivity extends Activity {
                 if (text.startsWith("视频") && client.isRunning()) client.disconnect();
                 scheduleReconnect();
             }
-        });
+        }, this::setControlButtonsEnabled, this::showBoardControlState);
 
         findViewById(R.id.phone_connect).setOnClickListener(v -> {
             String host = boardIp.getText().toString().trim();
@@ -72,6 +75,7 @@ public final class PhoneRemoteActivity extends Activity {
             connectToHost(host);
         });
         findViewById(R.id.phone_discover).setOnClickListener(v -> startDiscovery());
+        findViewById(R.id.phone_disconnect).setOnClickListener(v -> disconnectManually());
 
         bindHoldButton(R.id.phone_up, "UP");
         bindHoldButton(R.id.phone_down, "DOWN");
@@ -81,6 +85,7 @@ public final class PhoneRemoteActivity extends Activity {
         bindHoldButton(R.id.phone_focus_minus, "FOCUS_MINUS");
         bindOkHomeButton();
         bindBackButton();
+        setControlButtonsEnabled(false);
         View controls = findViewById(R.id.phone_controls_content);
         TextView toggleControls = findViewById(R.id.phone_toggle_controls);
         if (controls != null && toggleControls != null) {
@@ -92,7 +97,7 @@ public final class PhoneRemoteActivity extends Activity {
         }
         if (state != null) {
             String reconnectHost = state.getString(STATE_RECONNECT_HOST);
-            if (reconnectHost != null && !reconnectHost.isEmpty()) {
+            if (allowAutoReconnect && reconnectHost != null && !reconnectHost.isEmpty()) {
                 lastRequestedHost = reconnectHost;
                 status.setText("屏幕旋转，正在重新连接 " + reconnectHost);
             }
@@ -100,7 +105,7 @@ public final class PhoneRemoteActivity extends Activity {
     }
 
     private void scheduleReconnect() {
-        if (!started || lastRequestedHost == null) return;
+        if (!started || !allowAutoReconnect || lastRequestedHost == null) return;
         reconnectHandler.removeCallbacks(reconnectRunnable);
         reconnectHandler.postDelayed(reconnectRunnable, 2_000);
     }
@@ -108,11 +113,47 @@ public final class PhoneRemoteActivity extends Activity {
     private void connectToHost(String host) {
         Log.i(TAG, "connectToHost: " + host);
         boardIp.setText(host);
-        getPreferences(0).edit().putString("board_ip", host).apply();
+        getPreferences(0).edit().putString("board_ip", host)
+                .putBoolean("auto_connect", true).apply();
         status.setText("正在连接 " + host);
+        allowAutoReconnect = true;
         lastRequestedHost = host;
         reconnectHandler.removeCallbacks(reconnectRunnable);
         client.connect(host);
+    }
+
+    private void disconnectManually() {
+        Log.i(TAG, "manual disconnect requested");
+        allowAutoReconnect = false;
+        lastRequestedHost = null;
+        getPreferences(0).edit().putBoolean("auto_connect", false).apply();
+        searchNumber++;
+        discovery.cancel();
+        reconnectHandler.removeCallbacks(reconnectRunnable);
+        client.disconnect();
+        setControlButtonsEnabled(false);
+        status.setText("已手动断开；点击连接或搜索后重新连接");
+    }
+
+    private void setControlButtonsEnabled(boolean enabled) {
+        int[] ids = {R.id.phone_up, R.id.phone_down, R.id.phone_left, R.id.phone_right,
+                R.id.phone_ok_home, R.id.phone_focus_plus, R.id.phone_focus_minus,
+                R.id.phone_distance_reset, R.id.phone_light, R.id.phone_menu,
+                R.id.phone_back, R.id.phone_rotate, R.id.phone_photo, R.id.phone_record};
+        for (int id : ids) {
+            View button = findViewById(id);
+            if (button != null) {
+                button.setEnabled(enabled);
+                button.setAlpha(enabled ? 1f : 0.45f);
+            }
+        }
+    }
+
+    private void showBoardControlState(boolean lightOn, boolean recording) {
+        View lightButton = findViewById(R.id.phone_light);
+        View recordButton = findViewById(R.id.phone_record);
+        if (lightButton != null) lightButton.setSelected(lightOn);
+        if (recordButton != null) recordButton.setSelected(recording);
     }
 
     private void startDiscovery() {
@@ -120,7 +161,7 @@ public final class PhoneRemoteActivity extends Activity {
         Log.i(TAG, "search start #" + request + ", connected=" + client.isRunning()
                 + ", lastHost=" + lastRequestedHost);
         status.setText("正在搜索同一局域网中的 AHD 主板…");
-        discovery.discover(boards -> {
+        discovery.discover(boardIp.getText().toString().trim(), boards -> {
             Log.i(TAG, "search result #" + request + ": count=" + boards.size()
                     + ", started=" + started + ", currentSearch=" + searchNumber);
             if (!started || request != searchNumber) return;
@@ -129,7 +170,8 @@ public final class PhoneRemoteActivity extends Activity {
             } else if (boards.size() == 1) {
                 PhoneBoardDiscovery.Board board = boards.get(0);
                 if (client.isRunning() && board.host.equals(lastRequestedHost)) {
-                    status.setText("已连接 " + board.name + " (" + board.host + ")");
+                    status.setText("已连接 " + board.name + " (" + board.host + ")"
+                            + (client.canControl() ? "，可控制" : "，仅观看"));
                 } else {
                     status.setText("发现 " + board.name + "，正在连接…");
                     connectToHost(board.host);
@@ -150,7 +192,7 @@ public final class PhoneRemoteActivity extends Activity {
         super.onStart();
         started = true;
         Log.i(TAG, "onStart: lastHost=" + lastRequestedHost + ", running=" + client.isRunning());
-        if (client != null && !client.isRunning()) {
+        if (allowAutoReconnect && client != null && !client.isRunning()) {
             if (lastRequestedHost == null) startDiscovery();
             else connectToHost(lastRequestedHost);
         }
@@ -158,7 +200,7 @@ public final class PhoneRemoteActivity extends Activity {
 
     @Override
     protected void onSaveInstanceState(Bundle outState) {
-        if (lastRequestedHost != null) {
+        if (allowAutoReconnect && lastRequestedHost != null) {
             outState.putString(STATE_RECONNECT_HOST, lastRequestedHost);
         }
         super.onSaveInstanceState(outState);
@@ -166,13 +208,35 @@ public final class PhoneRemoteActivity extends Activity {
 
     @SuppressWarnings("ClickableViewAccessibility")
     private void bindHoldButton(int id, String code) {
+        final boolean motorDirection = "UP".equals(code) || "DOWN".equals(code)
+                || "LEFT".equals(code) || "RIGHT".equals(code);
+        final Handler releaseHandler = new Handler(Looper.getMainLooper());
+        final Runnable[] keepAlive = new Runnable[1];
+        final boolean[] pressed = new boolean[1];
+        keepAlive[0] = () -> {
+            if (!pressed[0]) return;
+            client.send(code + "_KEEPALIVE");
+            releaseHandler.postDelayed(keepAlive[0], MOTOR_KEEPALIVE_MS);
+        };
         findViewById(id).setOnTouchListener((v, event) -> {
             if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                v.setPressed(true);
+                pressed[0] = true;
+                Log.d(TAG, "hold down: " + code);
                 client.send(code + "_DOWN");
+                if (motorDirection) {
+                    releaseHandler.removeCallbacks(keepAlive[0]);
+                    releaseHandler.postDelayed(keepAlive[0], MOTOR_KEEPALIVE_MS);
+                }
                 return true;
             }
             if (event.getActionMasked() == MotionEvent.ACTION_UP
                     || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                if (!pressed[0]) return true;
+                pressed[0] = false;
+                releaseHandler.removeCallbacks(keepAlive[0]);
+                Log.d(TAG, "hold up: " + code);
                 client.send(code + "_UP");
                 return true;
             }
@@ -183,11 +247,17 @@ public final class PhoneRemoteActivity extends Activity {
     public void onRemoteButtonClick(View view) {
         int id = view.getId();
         if (id == R.id.phone_distance_reset) client.send("RESET_DISTANCE");
-        else if (id == R.id.phone_light) client.send("LIGHT");
+        else if (id == R.id.phone_light) {
+            view.setSelected(!view.isSelected());
+            client.send("LIGHT");
+        }
         else if (id == R.id.phone_menu) client.send("MENU");
         else if (id == R.id.phone_rotate) client.send("ROTATE");
         else if (id == R.id.phone_photo) client.send("PHOTO");
-        else if (id == R.id.phone_record) client.send("RECORD");
+        else if (id == R.id.phone_record) {
+            view.setSelected(!view.isSelected());
+            client.send("RECORD");
+        }
     }
 
     @SuppressWarnings("ClickableViewAccessibility")
@@ -195,8 +265,12 @@ public final class PhoneRemoteActivity extends Activity {
         View button = findViewById(R.id.phone_ok_home);
         button.setOnClickListener(v -> client.send("OK"));
         button.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                v.setPressed(true);
+                return true;
+            }
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                v.setPressed(false);
                 if (event.getEventTime() - event.getDownTime() >= 650) {
                     client.send("HOME");
                 } else {
@@ -204,7 +278,11 @@ public final class PhoneRemoteActivity extends Activity {
                 }
                 return true;
             }
-            return event.getActionMasked() == MotionEvent.ACTION_CANCEL;
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                return true;
+            }
+            return false;
         });
     }
 
@@ -213,8 +291,12 @@ public final class PhoneRemoteActivity extends Activity {
         View button = findViewById(R.id.phone_back);
         button.setOnClickListener(v -> client.send("BACK"));
         button.setOnTouchListener((v, event) -> {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) return true;
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                v.setPressed(true);
+                return true;
+            }
             if (event.getActionMasked() == MotionEvent.ACTION_UP) {
+                v.setPressed(false);
                 if (event.getEventTime() - event.getDownTime() >= 2000) {
                     client.send("BACK_LONG");
                 } else {
@@ -222,7 +304,11 @@ public final class PhoneRemoteActivity extends Activity {
                 }
                 return true;
             }
-            return event.getActionMasked() == MotionEvent.ACTION_CANCEL;
+            if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
+                v.setPressed(false);
+                return true;
+            }
+            return false;
         });
     }
 

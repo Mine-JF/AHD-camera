@@ -36,7 +36,7 @@ public final class MotorController {
     private boolean opened;
 
     /** 打开控制器串口；重复调用时复用已打开的连接。 */
-    public boolean start() {
+    public synchronized boolean start() {
         if (opened) {
             return true;
         }
@@ -46,7 +46,7 @@ public final class MotorController {
     }
 
     /** 控制电机1（上下）或电机2（左右）开始运动。 */
-    public void move(int command) {
+    public synchronized void move(int command) {
         if (!start()) {
             return;
         }
@@ -54,7 +54,7 @@ public final class MotorController {
     }
 
     /** 根据运动轴选择停止电机1或电机2，不影响另一个轴和 VCM。 */
-    public void stopForMove(int moveCommand) {
+    public synchronized void stopForMove(int moveCommand) {
         if (!opened) {
             return;
         }
@@ -67,7 +67,7 @@ public final class MotorController {
      * 以指定的 1~10 档驱动电机3 VCM。档位代表 PWM 占空比，不使用 0=默认10档，
      * 以便页面层可以逐级调整。MCU 会持续保持当前驱动，直到收到新命令或停止命令。
      */
-    public boolean moveFocusAtLevel(int command, int level) {
+    public synchronized boolean moveFocusAtLevel(int command, int level) {
         if ((command != COMMAND_FOCUS_UP && command != COMMAND_FOCUS_DOWN)
                 || level < 1 || level > 10 || !start()) {
             return false;
@@ -76,14 +76,14 @@ public final class MotorController {
     }
 
     /** 让 VCM 进入 Coast 模式并断电，镜头可能因弹簧作用回位。 */
-    public void stopFocus() {
+    public synchronized void stopFocus() {
         if (opened) {
             V4l2CameraNative.sendMotorCommand(COMMAND_STOP_FOCUS, 0);
         }
     }
 
     /** 设置全部补光灯：开启时固定发送10档（100%），关闭时发送全部灯关。 */
-    public boolean setLightEnabled(boolean enabled) {
+    public synchronized boolean setLightEnabled(boolean enabled) {
         if (!start()) {
             return false;
         }
@@ -93,7 +93,7 @@ public final class MotorController {
     }
 
     /** 页面离开时停止全部电机并关闭串口，防止云台或 VCM 持续通电。 */
-    public void stopAndClose() {
+    public synchronized void stopAndClose() {
         if (!opened) {
             return;
         }
@@ -103,11 +103,11 @@ public final class MotorController {
         Log.i(TAG, "stopAndClose");
     }
 
-    public boolean resetDistanceCounter() {
+    public synchronized boolean resetDistanceCounter() {
         return start() && V4l2CameraNative.resetDistanceCounter();
     }
 
-    public Integer readDistanceCounter() {
+    public synchronized Integer readDistanceCounter() {
         return start() ? V4l2CameraNative.readDistanceCounter() : null;
     }
 }

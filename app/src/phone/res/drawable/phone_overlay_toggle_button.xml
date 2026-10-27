@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <shape>
+            <solid android:color="#D0367EB3" />
+            <corners android:radius="16dp" />
+            <stroke android:width="2dp" android:color="#A7E8FF" />
+        </shape>
+    </item>
+    <item android:drawable="@drawable/phone_remote_overlay_panel" />
+</selector>

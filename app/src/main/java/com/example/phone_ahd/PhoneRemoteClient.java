@@ -6,6 +6,8 @@ import android.media.MediaCodec;
 import android.media.MediaFormat;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.Process;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.Surface;
 import android.view.TextureView;
@@ -30,6 +32,8 @@ import java.util.concurrent.TimeUnit;
 /** Phone side of the simple LAN protocol. Network and codec work never run on the UI thread. */
 final class PhoneRemoteClient {
     interface StatusListener { void onStatus(String status); }
+    interface RoleListener { void onRoleChanged(boolean canControl); }
+    interface StateListener { void onStateChanged(boolean lightOn, boolean recording); }
     private static final String TAG = "PhoneRemoteClient";
     private static final int MAGIC = 0x41484431;
     private static final int ROTATION_MARKER = 0x41484452;
@@ -37,10 +41,17 @@ final class PhoneRemoteClient {
     private static final int VIDEO_PORT = 39002;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService commands = Executors.newSingleThreadExecutor();
+    private final ExecutorService commands = Executors.newSingleThreadExecutor(task ->
+            new Thread(() -> {
+                Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY);
+                task.run();
+            }, "phone-control-send"));
     private final TextureView preview;
     private final StatusListener listener;
+    private final RoleListener roleListener;
+    private final StateListener stateListener;
     private volatile boolean running;
+    private volatile boolean canControl;
     private volatile long connectionGeneration;
     private volatile Socket controlSocket;
     private volatile Socket videoSocket;
@@ -50,10 +61,15 @@ final class PhoneRemoteClient {
     private int videoWidth;
     private int videoHeight;
     private volatile int videoRotationDegrees;
+    private volatile long lastPingSentAt;
+    private int pingSamples;
 
-    PhoneRemoteClient(TextureView preview, StatusListener listener) {
+    PhoneRemoteClient(TextureView preview, StatusListener listener, RoleListener roleListener,
+            StateListener stateListener) {
         this.preview = preview;
         this.listener = listener;
+        this.roleListener = roleListener;
+        this.stateListener = stateListener;
         preview.addOnLayoutChangeListener((view, left, top, right, bottom,
                 oldLeft, oldTop, oldRight, oldBottom) -> applyPreviewFit());
     }
@@ -62,10 +78,18 @@ final class PhoneRemoteClient {
         return running;
     }
 
+    boolean canControl() {
+        return canControl;
+    }
+
     void connect(String host) {
         disconnect();
         long generation = ++connectionGeneration;
         running = true;
+        canControl = false;
+        mainHandler.post(() -> {
+            if (connectionGeneration == generation) stateListener.onStateChanged(false, false);
+        });
         videoRotationDegrees = 0;
         Log.i(TAG, "connect requested: host=" + host + ", controlPort=" + CONTROL_PORT
                 + ", videoPort=" + VIDEO_PORT);
@@ -105,14 +129,25 @@ final class PhoneRemoteClient {
     }
 
     void send(String command) {
+        if (!"PING".equals(command) && !canControl) return;
+        long queuedAt = SystemClock.elapsedRealtimeNanos();
         commands.execute(() -> {
-            if (!running || commandWriter == null) return;
+            if (!running || commandWriter == null
+                    || (!"PING".equals(command) && !canControl)) return;
             long generation = connectionGeneration;
             try {
+                long writeStartedAt = SystemClock.elapsedRealtimeNanos();
                 if (!"PING".equals(command)) Log.i(TAG, "send command: " + command);
+                else lastPingSentAt = writeStartedAt;
                 commandWriter.write(command);
                 commandWriter.write('\n');
                 commandWriter.flush();
+                if (isDirectionEdge(command)) {
+                    long sentAt = SystemClock.elapsedRealtimeNanos();
+                    Log.i(TAG, "control timing " + command + ": queueMs="
+                            + (writeStartedAt - queuedAt) / 1_000_000f
+                            + ", writeMs=" + (sentAt - writeStartedAt) / 1_000_000f);
+                }
             } catch (IOException error) {
                 Log.e(TAG, "control send failed: command=" + command, error);
                 connectionLost("主板控制连接断开", generation);
@@ -120,10 +155,17 @@ final class PhoneRemoteClient {
         });
     }
 
+    private static boolean isDirectionEdge(String command) {
+        return (command.startsWith("UP_") || command.startsWith("DOWN_")
+                || command.startsWith("LEFT_") || command.startsWith("RIGHT_"))
+                && !command.endsWith("_KEEPALIVE");
+    }
+
     void disconnect() {
         connectionGeneration++;
         if (running) Log.i(TAG, "disconnect requested");
         running = false;
+        canControl = false;
         close(controlSocket);
         close(videoSocket);
         controlSocket = null;
@@ -133,6 +175,8 @@ final class PhoneRemoteClient {
         mainHandler.post(() -> {
             if (connectionGeneration == clearedGeneration) {
                 preview.setAlpha(0f);
+                roleListener.onRoleChanged(false);
+                stateListener.onStateChanged(false, false);
                 Log.i(TAG, "preview hidden after disconnect");
             }
         });
@@ -167,7 +211,31 @@ final class PhoneRemoteClient {
             String reply;
             while (running && connectionGeneration == generation
                     && (reply = reader.readLine()) != null) {
-                if (!"PONG".equals(reply)) Log.i(TAG, "control reply: " + reply);
+                if ("ROLE:CONTROL".equals(reply)) {
+                    setControlRole(true, generation);
+                } else if ("ROLE:VIEW_ONLY".equals(reply) || "READ_ONLY".equals(reply)) {
+                    setControlRole(false, generation);
+                } else if (reply.startsWith("STATE:LIGHT=")) {
+                    String[] fields = reply.substring("STATE:".length()).split(";");
+                    if (fields.length == 2 && ("LIGHT=0".equals(fields[0]) || "LIGHT=1".equals(fields[0]))
+                            && ("RECORD=0".equals(fields[1]) || "RECORD=1".equals(fields[1]))) {
+                        boolean lightOn = "LIGHT=1".equals(fields[0]);
+                        boolean recording = "RECORD=1".equals(fields[1]);
+                        mainHandler.post(() -> {
+                            if (connectionGeneration == generation) {
+                                stateListener.onStateChanged(lightOn, recording);
+                            }
+                        });
+                    }
+                } else if ("PONG".equals(reply)) {
+                    long sentAt = lastPingSentAt;
+                    if (sentAt != 0 && ++pingSamples % 5 == 0) {
+                        Log.i(TAG, "control ping rttMs="
+                                + (SystemClock.elapsedRealtimeNanos() - sentAt) / 1_000_000f);
+                    }
+                } else {
+                    Log.i(TAG, "control reply: " + reply);
+                }
             }
         } catch (IOException error) {
             if (running) Log.w(TAG, "control reply stream failed", error);
@@ -176,6 +244,18 @@ final class PhoneRemoteClient {
             Log.w(TAG, "control connection closed by board");
             connectionLost("主板控制连接断开", generation);
         }
+    }
+
+    private void setControlRole(boolean controller, long generation) {
+        if (connectionGeneration != generation) return;
+        canControl = controller;
+        Log.i(TAG, "control role=" + (controller ? "CONTROL" : "VIEW_ONLY"));
+        mainHandler.post(() -> {
+            if (connectionGeneration == generation) {
+                roleListener.onRoleChanged(controller);
+                listener.onStatus(controller ? "已连接：可控制主板" : "已连接：仅观看，另一台手机正在控制");
+            }
+        });
     }
 
     private void receiveVideo(String host, long generation) {
@@ -216,7 +296,7 @@ final class PhoneRemoteClient {
                     surface, null, 0);
             decoder.start();
             Log.i(TAG, "video decoder started");
-            status("已连接主板画面");
+            status(canControl ? "已连接主板画面（可控制）" : "已连接主板画面（仅观看）");
             MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
             long frameCount = 0;
             long receivedFrames = 0;
